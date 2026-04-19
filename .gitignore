@@ -1,0 +1,15 @@
+.DS_Store
+Thumbs.db
+
+dist/
+release/
+*.zip
+
+*.log
+*.tmp
+*.swp
+*.swo
+
+.idea/
+.vscode/
+
