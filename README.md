@@ -91,34 +91,6 @@ The profile field named `batch_size` is a **concurrency window**, not a serial b
   - Dry run, backfill, queue, and diagnostics areas
 - Logged-in non-admin users cannot see or edit administrator model profiles.
 
-## Release Package
-
-The release package is meant to be installed directly into FreshRSS and should unpack to:
-
-```text
-xExtension-AutoLabel/
-```
-
-Release packaging and audit helpers are included in:
-
-- [`scripts/release-audit.sh`](./scripts/release-audit.sh)
-- [`scripts/package-release.sh`](./scripts/package-release.sh)
-
-## Security Review
-
-Before publishing, review:
-
-- [`SECURITY_REVIEW.md`](./SECURITY_REVIEW.md)
-- [`RELEASE.md`](./RELEASE.md)
-
-The release audit is intended to catch:
-
-- hard-coded secrets
-- instance-specific URLs
-- local machine artifacts
-- tokenized admin-only worker URLs
-- accidental packaging of non-extension files
-
 ## Troubleshooting
 
 - If queue throughput is low, verify that FreshRSS maintenance is actually running.
@@ -132,4 +104,3 @@ The release audit is intended to catch:
 - Entry point: [`extension.php`](./extension.php)
 - Main logic: [`lib/bootstrap.php`](./lib/bootstrap.php)
 - Controller: [`Controllers/autolabelController.php`](./Controllers/autolabelController.php)
-
