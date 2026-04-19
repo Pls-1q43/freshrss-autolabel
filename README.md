@@ -79,6 +79,18 @@ AutoLabel uses an asynchronous queue for both new entries and backfill jobs.
 
 The profile field named `batch_size` is a **concurrency window**, not a serial batch counter. A value of `5` means AutoLabel tries to process up to five article requests at the same time for the same profile, then waits for that window to finish before starting the next one.
 
+## Recommended Ollama Embedding Setup
+
+For zero-shot embedding classification through Ollama, a strong recommended starting point is:
+
+- model: `qwen3-embedding:0.6b`
+- `content_max_chars`: `1500`
+- `embedding_num_ctx`: `2000`
+- instruction language: English
+- similarity threshold: `0.65`
+
+This combination is a practical baseline for lightweight local classification and usually offers a good balance between speed and useful semantic matching.
+
 ## Permissions
 
 - Anonymous users cannot access the AutoLabel dashboard.

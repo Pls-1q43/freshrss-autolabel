@@ -111,6 +111,18 @@ Si la file grossit continuellement, vérifiez d’abord :
 - que la concurrence est disponible
 - que le débit du provider n’est pas inférieur au débit d’entrée
 
+## Configuration recommandée pour Ollama Embeddings
+
+Pour une classification zéro-shot par embeddings avec Ollama, un très bon point de départ est :
+
+- modèle : `qwen3-embedding:0.6b`
+- `content_max_chars` : `1500`
+- `embedding_num_ctx` : `2000`
+- instruction : rédigée en anglais
+- seuil de similarité : `0.65`
+
+Cet ensemble de paramètres constitue une base pratique pour une classification locale légère, avec un bon compromis entre vitesse et qualité de rapprochement sémantique.
+
 ## Modèle de permission
 
 - Les utilisateurs non connectés ne peuvent pas accéder au tableau de bord AutoLabel.
