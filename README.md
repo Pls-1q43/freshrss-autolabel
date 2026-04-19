@@ -1,43 +1,27 @@
 # FreshRSS AutoLabel
 
+[![Release](https://img.shields.io/github/v/release/Pls-1q43/freshrss-autolabel)](https://github.com/Pls-1q43/freshrss-autolabel/releases)
+[![License](https://img.shields.io/github/license/Pls-1q43/freshrss-autolabel)](./LICENSE)
+[![FreshRSS](https://img.shields.io/badge/FreshRSS-extension-1f7aec)](https://github.com/Pls-1q43/freshrss-autolabel)
+[![Docs](https://img.shields.io/badge/docs-English%20%7C%20%E4%B8%AD%E6%96%87%20%7C%20Fran%C3%A7ais-0f766e)](https://github.com/Pls-1q43/freshrss-autolabel)
+
 [English](./README.md) | [中文](./docs/README.zh-CN.md) | [Français](./docs/README.fr.md)
 
-`AutoLabel` is a FreshRSS system extension that automatically adds existing FreshRSS tags to entries by using either:
+Automatically label FreshRSS entries with either LLM classification or embedding-based zero-shot matching.
 
-- LLM classification
-- Zero-shot embedding similarity
+Maintained by [Pls](https://1q43.blog).  
+Project page, usage notes, and updates: [github.com/Pls-1q43/freshrss-autolabel](https://github.com/Pls-1q43/freshrss-autolabel)
 
-The extension is designed around a mixed permission model:
+## What It Does
 
-- Administrators create and manage model profiles
-- Users create and manage their own AutoLabel rules from approved profiles
+AutoLabel lets administrators publish approved model profiles and lets each user build personal labeling rules on top of those profiles.
 
-## Features
-
-- Administrator-managed model profiles
+- Admin-managed model profiles
 - User-managed AutoLabel rules
-- LLM classification with OpenAI, Anthropic, Gemini, and Ollama
-- Embedding classification with OpenAI, Gemini, and Ollama
-- Multiple AutoLabels per user
-- Multiple target tags per AutoLabel
+- LLM mode and embedding mode
+- Multiple existing FreshRSS target tags per rule
 - Asynchronous queue processing for new entries and backfill jobs
-- Concurrent queue windows per profile when PHP `curl_multi` is available
-- Built-in UI translations for English, Simplified Chinese, and French
-
-## Architecture
-
-- Extension type: `system`
-- Admin scope:
-  - Create model profiles
-  - Define provider, model, mode, batching window, and request defaults
-- User scope:
-  - Create AutoLabels from enabled profiles
-  - Select one or more existing FreshRSS tags
-  - Configure prompt or embedding anchors/instruction
-- Queue scope:
-  - New entries are queued on insert
-  - Queue processing runs during FreshRSS user maintenance
-  - Optional dedicated queue worker is available for independent scheduling
+- Optional concurrent queue windows when PHP `curl_multi` is available
 
 ## Supported Providers
 
@@ -50,69 +34,110 @@ The extension is designed around a mixed permission model:
 
 Notes:
 
-- Anthropic profiles are restricted to LLM mode.
-- Concurrent queue windows require PHP `curl` with `curl_multi`.
-- When concurrency is unavailable, the UI shows a warning and queue concurrency is disabled.
+- Anthropic is restricted to LLM mode.
+- Embedding target tags must already exist in FreshRSS.
+- Queue concurrency depends on PHP `curl_multi`.
+
+## Recommended Ollama Embedding Setup
+
+For zero-shot classification with Ollama, a good default starting point is:
+
+- Model: `qwen3-embedding:0.6b`
+- Max content length: `1500`
+- `Embedding num_ctx`: `2000`
+- Instruct / instruction: write it in English
+- Similarity threshold: `0.65`
+
+This setup is especially suitable for lightweight local embedding classification.
 
 ## Installation
 
-1. Copy this repository into your FreshRSS `extensions/` directory.
-2. Deploy it under this directory name:
+### Option 1: Download the release package
+
+1. Download the latest release from [GitHub Releases](https://github.com/Pls-1q43/freshrss-autolabel/releases).
+2. Extract it into your FreshRSS `extensions/` directory.
+3. Make sure the deployed directory is named:
 
 ```text
 xExtension-AutoLabel
 ```
 
-3. Enable `AutoLabel` from the FreshRSS extensions page.
-4. Open the `AutoLabel` dashboard.
+4. Enable `AutoLabel` from the FreshRSS extensions page.
+
+### Option 2: Clone manually
+
+```bash
+cd /path/to/FreshRSS/extensions
+git clone https://github.com/Pls-1q43/freshrss-autolabel.git xExtension-AutoLabel
+```
+
+Then enable the extension from FreshRSS.
+
+## Configuration Model
+
+### Administrator side
+
+Administrators manage:
+
+- provider
+- model
+- mode (`LLM` or `Embedding`)
+- base URL
+- API key
+- timeout
+- max content length
+- concurrency window (`batch_size`)
+- embedding dimensions
+- embedding `num_ctx`
+- default instruction
+
+`batch_size` means **concurrency window size**, not a serial batch count.
+
+### User side
+
+Users manage:
+
+- AutoLabel rule name
+- target tags
+- selected profile
+- rule mode
+- prompt
+- embedding anchors
+- similarity threshold
+- instruction
 
 ## Queue Processing
 
-AutoLabel uses an asynchronous queue for both new entries and backfill jobs.
+AutoLabel uses an asynchronous queue for:
 
-- Automatic processing:
-  - Runs through the FreshRSS `FreshrssUserMaintenance` hook
-- Manual processing:
-  - Available from the AutoLabel dashboard
-- Optional dedicated worker:
-  - Admins can schedule the queue worker separately if they want more predictable throughput
+- newly inserted entries
+- backfill jobs
 
-The profile field named `batch_size` is a **concurrency window**, not a serial batch counter. A value of `5` means AutoLabel tries to process up to five article requests at the same time for the same profile, then waits for that window to finish before starting the next one.
+Queue consumption can happen through:
 
-## Recommended Ollama Embedding Setup
-
-For zero-shot embedding classification through Ollama, a strong recommended starting point is:
-
-- model: `qwen3-embedding:0.6b`
-- `content_max_chars`: `1500`
-- `embedding_num_ctx`: `2000`
-- instruction language: English
-- similarity threshold: `0.65`
-
-This combination is a practical baseline for lightweight local classification and usually offers a good balance between speed and useful semantic matching.
+- FreshRSS `FreshrssUserMaintenance`
+- the manual queue action in the dashboard
+- an optional dedicated queue worker for administrators
 
 ## Permissions
 
 - Anonymous users cannot access the AutoLabel dashboard.
-- Administrators can see:
-  - Model profile management
-  - Queue worker URL
-  - All shared configuration areas
-- Logged-in non-admin users can see:
-  - Their own AutoLabel rules
-  - Dry run, backfill, queue, and diagnostics areas
-- Logged-in non-admin users cannot see or edit administrator model profiles.
+- Administrators can see model profile management and the queue worker URL.
+- Logged-in non-admin users can manage their own rules, queue, dry runs, backfill, and diagnostics.
+- Logged-in non-admin users cannot access admin profile management.
 
 ## Troubleshooting
 
-- If queue throughput is low, verify that FreshRSS maintenance is actually running.
-- If concurrent windows are unavailable, check whether PHP `curl_multi` is installed.
-- If embedding requests fail on Ollama, review profile timeout, `content_max_chars`, `embedding_num_ctx`, and provider logs together.
-- If tags do not appear, make sure the target tags already exist in FreshRSS.
+- Queue keeps growing:
+  - confirm FreshRSS maintenance is actually running
+- No visible concurrency:
+  - confirm PHP has `curl_multi`
+- Ollama embedding timeouts:
+  - review `content_max_chars`, `timeout_seconds`, `embedding_num_ctx`, and Ollama logs together
+- Tags are not applied:
+  - confirm the target tags already exist in FreshRSS
 
-## Project Files
+## License
 
-- Extension metadata: [`metadata.json`](./metadata.json)
-- Entry point: [`extension.php`](./extension.php)
-- Main logic: [`lib/bootstrap.php`](./lib/bootstrap.php)
-- Controller: [`Controllers/autolabelController.php`](./Controllers/autolabelController.php)
+This project is distributed under **GNU GPL 3.0**.  
+See [LICENSE](./LICENSE).

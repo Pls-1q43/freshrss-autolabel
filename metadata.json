@@ -1,6 +1,6 @@
 {
   "name": "AutoLabel",
-  "author": "OpenAI Codex",
+  "author": "Pls",
   "description": "Automatically label FreshRSS entries with LLM or embedding-based classification, using administrator-managed model profiles and user-managed AutoLabels.",
   "version": "0.1.0",
   "entrypoint": "AutoLabel",

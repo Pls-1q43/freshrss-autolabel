@@ -77,6 +77,32 @@ html[class*="theme_dark"] .autolabel-page {
     linear-gradient(135deg, rgba(32, 119, 181, 0.14), rgba(22, 164, 117, 0.08));
 }
 
+.autolabel-hero__meta {
+  margin: 0.55rem 0 0;
+  color: var(--autolabel-text-muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.autolabel-hero__meta a {
+  color: #1676b1;
+  text-decoration: underline;
+  text-underline-offset: 0.14em;
+}
+
+html.darkMode_yes .autolabel-hero__meta a,
+html[class*="darkMode_yes"] .autolabel-hero__meta a,
+html[class*="theme_dark"] .autolabel-hero__meta a {
+  color: #7cc7ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  html.darkMode_auto .autolabel-hero__meta a,
+  html[class*="darkMode_auto"] .autolabel-hero__meta a {
+    color: #7cc7ff;
+  }
+}
+
 .autolabel-section {
   display: grid;
   gap: 1rem;

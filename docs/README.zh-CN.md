@@ -2,42 +2,26 @@
 
 [English](../README.md) | [中文](./README.zh-CN.md) | [Français](./README.fr.md)
 
-`AutoLabel` 是一个 FreshRSS `system` 扩展，用于根据文章内容自动给文章打上**已有的 FreshRSS 标签**。它支持两种识别方式：
+FreshRSS AutoLabel 用于通过 LLM 分类或 Embedding 零样本匹配，自动为 FreshRSS 文章打上标签。
 
-- LLM 分类
-- Embedding 零样本相似度分类
-
-它采用混合权限模型：
-
-- 管理员负责管理模型档案
-- 普通用户基于管理员批准的模型档案创建自己的 AutoLabel 规则
+作者：[Pls](https://1q43.blog)  
+项目主页、使用说明与更新：[github.com/Pls-1q43/freshrss-autolabel](https://github.com/Pls-1q43/freshrss-autolabel)
 
 ## 功能概览
 
+AutoLabel 采用混合权限模型：
+
+- 管理员发布可用模型档案
+- 用户基于这些档案创建自己的 AutoLabel 规则
+
+支持内容包括：
+
 - 管理员管理模型档案
-- 用户管理个人 AutoLabel 规则
-- 支持 OpenAI、Anthropic、Gemini、Ollama 的 LLM 分类
-- 支持 OpenAI、Gemini、Ollama 的 Embedding 分类
-- 每位用户可创建多条 AutoLabel
-- 每条 AutoLabel 可关联多个已存在标签
-- 新文章与回填任务统一走异步队列
-- 若 PHP 提供 `curl_multi`，每个模型档案支持并发窗口处理
-- 内置英文、简体中文、法文界面翻译
-
-## 架构说明
-
-- 扩展类型：`system`
-- 管理员侧：
-  - 创建模型档案
-  - 配置 Provider、模型、模式、并发窗口与请求默认值
-- 用户侧：
-  - 从启用中的模型档案里创建 AutoLabel
-  - 选择一个或多个 FreshRSS 已有标签
-  - 配置 Prompt、锚定文本、阈值和 instruction
-- 队列侧：
-  - 新文章入库时自动入队
-  - 用户维护任务会自动尝试消费队列
-  - 也支持管理员单独调度专用 queue worker
+- 用户管理 AutoLabel 规则
+- LLM 模式与 Embedding 模式
+- 每条规则可绑定多个 FreshRSS 已有标签
+- 新文章与回填统一走异步队列
+- 若 PHP 提供 `curl_multi`，可启用并发窗口
 
 ## 支持的 Provider
 
@@ -50,107 +34,106 @@
 
 说明：
 
-- Anthropic 模型档案只能用于 LLM 模式。
-- 并发窗口依赖 PHP `curl` 扩展中的 `curl_multi` 能力。
-- 若并发不可用，界面会明确提示。
+- Anthropic 仅支持 LLM 模式
+- Embedding 目标标签必须预先在 FreshRSS 中创建
+- 队列并发依赖 PHP `curl_multi`
 
-## 安装与升级
+## 推荐的 Ollama Embedding 配置
 
-1. 将本仓库放入 FreshRSS 的 `extensions/` 目录。
-2. 实际部署目录名应为：
+特别推荐通过 Ollama 使用下面这组参数进行零样本分类：
+
+- 模型：`qwen3-embedding:0.6b`
+- 最大内容长度：`1500`
+- `Embedding num_ctx`：`2000`
+- Instruct / instruction：使用英文撰写
+- 相似度阈值：`0.65`
+
+这组配置很适合作为本地轻量 Embedding 分类的默认起点。
+
+## 安装
+
+### 方式一：下载 Release 包
+
+1. 前往 [GitHub Releases](https://github.com/Pls-1q43/freshrss-autolabel/releases) 下载最新版本。
+2. 解压到 FreshRSS 的 `extensions/` 目录。
+3. 确保目录名为：
 
 ```text
 xExtension-AutoLabel
 ```
 
-3. 在 FreshRSS 扩展页面启用 `AutoLabel`。
-4. 进入 `AutoLabel` 控制台完成管理员与用户侧配置。
+4. 在 FreshRSS 扩展页面启用 `AutoLabel`。
 
-升级时建议：
+### 方式二：直接克隆仓库
 
-- 先备份当前扩展目录
-- 使用新版本覆盖扩展文件
-- 重启 PHP-FPM / Web 服务或容器
-- 刷新页面并检查队列和权限行为
+```bash
+cd /path/to/FreshRSS/extensions
+git clone https://github.com/Pls-1q43/freshrss-autolabel.git xExtension-AutoLabel
+```
 
-## 配置说明
+然后在 FreshRSS 中启用扩展。
 
-### 管理员配置
+## 配置模型
 
-- 模式：LLM 或 Embedding
+### 管理员负责
+
 - Provider
 - 模型名
+- 模式（LLM / Embedding）
 - Base URL
 - API Key
 - 超时
 - 最大内容长度
-- 并发窗口大小
+- 并发窗口大小（`batch_size`）
 - Embedding 维度
 - Embedding `num_ctx`
 - 默认 instruction
 
-其中 `batch_size` 的语义是**并发窗口大小**，不是串行批次数。比如填 `5` 表示同一个模型档案会同时向 Provider 发起最多 5 条文章请求，等这一组全部结束后再进入下一组。
+其中 `batch_size` 表示**并发窗口大小**，不是串行批次数。
 
-### 用户配置
+### 用户负责
 
 - 规则名称
-- 目标标签（必须是 FreshRSS 已存在标签）
-- 模型档案
-- 模式
-- Prompt 或 Embedding 锚定文本
+- 目标标签
+- 选用的模型档案
+- 规则模式
+- Prompt
+- Embedding 锚定文本
 - 相似度阈值
 - instruction
 
-## 队列与 Worker
+## 队列处理
 
-AutoLabel 对新文章和回填都使用异步队列。
+AutoLabel 的异步队列主要处理：
 
-- 自动消费：
-  - 依赖 FreshRSS 的 `FreshrssUserMaintenance`
-- 手动消费：
-  - 在 AutoLabel 控制台中触发
-- 独立消费：
-  - 管理员可以使用专用 queue worker URL 配置额外调度
+- 新入库文章
+- 回填任务
 
-如果你发现队列持续积压，应优先检查：
+队列可以通过以下方式消费：
 
-- FreshRSS 用户维护任务是否实际运行
-- 是否启用了并发窗口
-- Provider 响应速度是否低于新增速度
-
-## Ollama Embedding 推荐配置
-
-如果你希望通过 Ollama 做零样本 Embedding 分类，特别推荐先从下面这组参数开始：
-
-- 模型：`qwen3-embedding:0.6b`
-- 最大内容长度：`1500`
-- `Embedding num_ctx`：`2000`
-- `Instruct`：使用英文撰写
-- 相似度阈值：`0.65`
-
-这组配置比较适合作为本地轻量分类的默认起点，通常能在速度和语义匹配效果之间取得不错的平衡。
+- FreshRSS 的 `FreshrssUserMaintenance`
+- 控制台中的手动处理
+- 管理员单独调度的 queue worker
 
 ## 权限模型
 
 - 未登录用户不能访问 AutoLabel 页面
-- 管理员可见：
-  - 模型档案管理
-  - 队列 worker 地址
-  - 所有共享配置区域
-- 普通已登录用户可见：
-  - 自己的 AutoLabel
-  - 试运行、回填、队列、诊断区域
-- 普通已登录用户不可见：
-  - 管理员模型档案配置
-  - 带 token 的 worker 地址
+- 管理员可见模型档案管理与 queue worker 地址
+- 普通登录用户可管理自己的规则、回填、队列与诊断
+- 普通登录用户不能访问管理员的模型档案管理
 
 ## 故障排查
 
-- 队列吞吐不足：
-  - 检查 FreshRSS maintenance 是否真的触发到扩展
+- 队列持续积压：
+  - 先确认 FreshRSS maintenance 是否真的在运行
 - 看不到并发：
-  - 检查 PHP 是否启用了 `curl_multi`
+  - 先确认 PHP 是否启用了 `curl_multi`
 - Ollama Embedding 超时：
   - 联合检查 `content_max_chars`、`timeout_seconds`、`embedding_num_ctx` 与 Ollama 日志
-- 标签未生效：
-  - 先确认目标标签已经在 FreshRSS 中存在
+- 标签未打上：
+  - 确认目标标签已经在 FreshRSS 中存在
+
+## 许可证
+
+本项目使用 **GNU GPL 3.0** 许可证。  
+详见 [LICENSE](../LICENSE)。

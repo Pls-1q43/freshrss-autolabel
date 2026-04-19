@@ -12,6 +12,9 @@ return [
 		'dashboard' => [
 			'title' => 'AutoLabel',
 			'subtitle' => '管理员发布可用模型档案，每位用户再基于这些档案创建自己的 AutoLabel 规则。',
+			'author_prefix' => '作者：',
+			'blog' => '博客',
+			'docs_updates' => '使用说明和更新请见 GitHub。',
 			'extensions' => '扩展',
 		],
 		'profile' => [

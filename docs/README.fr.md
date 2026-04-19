@@ -2,42 +2,26 @@
 
 [English](../README.md) | [中文](./README.zh-CN.md) | [Français](./README.fr.md)
 
-`AutoLabel` est une extension FreshRSS de type `system` qui applique automatiquement des **tags FreshRSS déjà existants** aux articles selon leur contenu. Deux approches sont prises en charge :
+FreshRSS AutoLabel permet d’appliquer automatiquement des tags aux articles FreshRSS au moyen d’une classification par LLM ou d’un appariement zéro-shot par embeddings.
 
-- classification par LLM
-- classification zéro-shot par similarité d’embeddings
+Auteur : [Pls](https://1q43.blog)  
+Projet, documentation d’usage et mises à jour : [github.com/Pls-1q43/freshrss-autolabel](https://github.com/Pls-1q43/freshrss-autolabel)
 
-Le modèle de permission est hybride :
+## Vue d’ensemble
 
-- les administrateurs gèrent les profils de modèle
-- les utilisateurs créent leurs propres règles AutoLabel à partir des profils autorisés
+AutoLabel suit un modèle de permission mixte :
 
-## Fonctionnalités
+- les administrateurs publient des profils de modèle approuvés
+- les utilisateurs créent leurs propres règles AutoLabel à partir de ces profils
 
-- Profils de modèle gérés par l’administrateur
-- Règles AutoLabel gérées par utilisateur
-- Classification LLM avec OpenAI, Anthropic, Gemini et Ollama
-- Classification par embeddings avec OpenAI, Gemini et Ollama
-- Plusieurs AutoLabels par utilisateur
-- Plusieurs tags cibles par AutoLabel
-- File asynchrone pour les nouveaux articles et les tâches de rétro-remplissage
-- Fenêtres de concurrence par profil si PHP `curl_multi` est disponible
-- Traductions d’interface en anglais, chinois simplifié et français
+Fonctionnalités principales :
 
-## Architecture
-
-- Type d’extension : `system`
-- Côté administrateur :
-  - création des profils de modèle
-  - configuration du provider, du modèle, du mode, de la fenêtre de concurrence et des paramètres par défaut
-- Côté utilisateur :
-  - création de règles AutoLabel depuis les profils activés
-  - sélection d’un ou plusieurs tags FreshRSS existants
-  - configuration du prompt ou des ancres d’embedding et de l’instruction
-- Côté file :
-  - les nouveaux articles sont mis en file à l’insertion
-  - la maintenance utilisateur FreshRSS consomme la file
-  - un worker dédié peut aussi être planifié séparément
+- profils de modèle gérés par l’administrateur
+- règles AutoLabel gérées par utilisateur
+- mode LLM et mode embeddings
+- plusieurs tags FreshRSS existants par règle
+- file asynchrone pour les nouveaux articles et le rétro-remplissage
+- fenêtres de concurrence si PHP fournit `curl_multi`
 
 ## Providers pris en charge
 
@@ -50,100 +34,106 @@ Le modèle de permission est hybride :
 
 Notes :
 
-- Les profils Anthropic sont limités au mode LLM.
-- Les fenêtres de concurrence nécessitent `curl_multi` côté PHP.
-- Si la concurrence n’est pas disponible, l’interface l’indique explicitement.
+- Anthropic est limité au mode LLM
+- les tags cibles pour les embeddings doivent déjà exister dans FreshRSS
+- la concurrence de file dépend de PHP `curl_multi`
+
+## Configuration Ollama Embeddings recommandée
+
+Pour une classification zéro-shot via Ollama, un très bon point de départ est :
+
+- modèle : `qwen3-embedding:0.6b`
+- longueur maximale du contenu : `1500`
+- `Embedding num_ctx` : `2000`
+- instruction : rédigée en anglais
+- seuil de similarité : `0.65`
+
+Cette combinaison est particulièrement adaptée à une classification locale légère par embeddings.
 
 ## Installation
 
-1. Copiez ce dépôt dans le dossier `extensions/` de FreshRSS.
-2. Le nom du dossier déployé doit être :
+### Option 1 : télécharger la release
+
+1. Téléchargez la dernière version depuis [GitHub Releases](https://github.com/Pls-1q43/freshrss-autolabel/releases).
+2. Décompressez-la dans le dossier `extensions/` de FreshRSS.
+3. Vérifiez que le nom du dossier final est :
 
 ```text
 xExtension-AutoLabel
 ```
 
-3. Activez `AutoLabel` depuis la page des extensions FreshRSS.
-4. Ouvrez le tableau de bord `AutoLabel`.
+4. Activez `AutoLabel` dans FreshRSS.
 
-## Configuration
+### Option 2 : cloner le dépôt
 
-### Configuration administrateur
+```bash
+cd /path/to/FreshRSS/extensions
+git clone https://github.com/Pls-1q43/freshrss-autolabel.git xExtension-AutoLabel
+```
 
-- mode : LLM ou embedding
+Puis activez l’extension depuis FreshRSS.
+
+## Modèle de configuration
+
+### Côté administrateur
+
 - provider
 - nom du modèle
+- mode (`LLM` / `Embedding`)
 - Base URL
 - clé API
 - délai d’expiration
 - longueur maximale du contenu
-- taille de la fenêtre de concurrence
+- taille de fenêtre de concurrence (`batch_size`)
 - dimensions d’embedding
-- `num_ctx` pour embedding
+- `Embedding num_ctx`
 - instruction par défaut
 
-Le champ `batch_size` signifie **taille de fenêtre de concurrence**. Une valeur de `5` signifie qu’AutoLabel essaie de lancer jusqu’à cinq requêtes d’articles en parallèle pour un même profil, puis attend la fin de cette fenêtre avant de lancer la suivante.
+`batch_size` signifie **taille de fenêtre de concurrence**, et non nombre de traitements strictement sériels.
 
-### Configuration utilisateur
+### Côté utilisateur
 
 - nom de la règle
 - tags cibles
-- profil de modèle
-- mode
-- prompt ou ancres d’embedding
+- profil choisi
+- mode de la règle
+- prompt
+- ancres d’embedding
 - seuil de similarité
 - instruction
 
-## File et worker
+## Traitement de la file
 
-AutoLabel utilise une file asynchrone pour les nouveaux articles et le rétro-remplissage.
+La file asynchrone AutoLabel sert principalement à :
 
-- Consommation automatique :
-  - via le hook `FreshrssUserMaintenance`
-- Consommation manuelle :
-  - depuis le tableau de bord AutoLabel
-- Consommation indépendante :
-  - via l’URL du worker dédié pour les administrateurs
+- traiter les nouveaux articles
+- traiter les tâches de rétro-remplissage
 
-Si la file grossit continuellement, vérifiez d’abord :
+La consommation de la file peut se faire via :
 
-- que la maintenance FreshRSS s’exécute réellement
-- que la concurrence est disponible
-- que le débit du provider n’est pas inférieur au débit d’entrée
+- `FreshrssUserMaintenance`
+- le traitement manuel depuis le tableau de bord
+- un worker de file séparé planifié par l’administrateur
 
-## Configuration recommandée pour Ollama Embeddings
+## Permissions
 
-Pour une classification zéro-shot par embeddings avec Ollama, un très bon point de départ est :
-
-- modèle : `qwen3-embedding:0.6b`
-- `content_max_chars` : `1500`
-- `embedding_num_ctx` : `2000`
-- instruction : rédigée en anglais
-- seuil de similarité : `0.65`
-
-Cet ensemble de paramètres constitue une base pratique pour une classification locale légère, avec un bon compromis entre vitesse et qualité de rapprochement sémantique.
-
-## Modèle de permission
-
-- Les utilisateurs non connectés ne peuvent pas accéder au tableau de bord AutoLabel.
-- Les administrateurs voient :
-  - la gestion des profils de modèle
-  - l’URL du worker de file
-  - toutes les zones de configuration partagées
-- Les utilisateurs connectés non administrateurs voient :
-  - leurs propres règles AutoLabel
-  - les zones d’essai, de rétro-remplissage, de file et de diagnostics
-- Les utilisateurs connectés non administrateurs ne voient pas :
-  - la gestion des profils administrateur
-  - les URLs de worker contenant un token
+- les utilisateurs non connectés ne peuvent pas accéder à AutoLabel
+- les administrateurs voient la gestion des profils et l’URL du worker
+- les utilisateurs connectés non administrateurs gèrent leurs propres règles, files, diagnostics et rétro-remplissages
+- les utilisateurs non administrateurs ne voient pas la gestion des profils administrateur
 
 ## Dépannage
 
-- Débit de file faible :
-  - vérifier que la maintenance FreshRSS atteint bien l’extension
-- Pas de concurrence visible :
-  - vérifier la présence de `curl_multi`
-- Délais Ollama sur les embeddings :
+- la file grossit :
+  - vérifier que la maintenance FreshRSS s’exécute réellement
+- aucune concurrence visible :
+  - vérifier que `curl_multi` est bien disponible en PHP
+- délais Ollama sur les embeddings :
   - vérifier `content_max_chars`, `timeout_seconds`, `embedding_num_ctx` et les logs Ollama
-- Tags non appliqués :
+- tags non appliqués :
   - vérifier que les tags cibles existent déjà dans FreshRSS
+
+## Licence
+
+Ce projet est distribué sous **GNU GPL 3.0**.  
+Voir [LICENSE](../LICENSE).

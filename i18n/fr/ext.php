@@ -12,6 +12,9 @@ return [
 		'dashboard' => [
 			'title' => 'AutoLabel',
 			'subtitle' => 'Les administrateurs publient des profils de modèles approuvés, puis chaque utilisateur crée ses propres AutoLabels à partir de ces profils.',
+			'author_prefix' => 'Par ',
+			'blog' => 'Blog',
+			'docs_updates' => 'Documentation et mises à jour sur GitHub.',
 			'extensions' => 'Extensions',
 		],
 		'profile' => [
