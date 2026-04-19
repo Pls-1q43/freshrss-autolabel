@@ -421,16 +421,19 @@ final class FreshExtension_autolabel_Controller extends FreshRSS_ActionControlle
 
 		$interactive = Minz_Request::paramBoolean('interactive');
 		try {
-			$response = $this->runQueueBatch($interactive
-				? [
+			$response = $interactive
+				? $this->runQueueBatch([
 					'max_runtime_seconds' => 2.0,
 					'max_processed_items' => 50,
 					'source' => 'cronQueueInteractive',
-				]
-				: [
-					'max_runtime_seconds' => 10.0,
-					'max_processed_items' => 200,
+				])
+				: $this->extension->drainQueueUntilIdle([
+					'max_runtime_seconds' => 20.0,
+					'max_processed_items' => 500,
 					'source' => 'cronQueue',
+				], [
+					'max_total_seconds' => 900.0,
+					'max_idle_rounds' => 3,
 				]);
 		} catch (Throwable $throwable) {
 			$response = $this->queueErrorResponse('cronQueue', $throwable);

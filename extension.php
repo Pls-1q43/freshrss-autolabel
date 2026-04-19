@@ -217,14 +217,92 @@ final class AutoLabelExtension extends Minz_Extension {
 
 	public function runQueueMaintenance(): void {
 		try {
-			$this->queueProcessor()->process([
+			$this->drainQueueUntilIdle([
 				'max_runtime_seconds' => 20.0,
-				'max_processed_items' => 120,
+				'max_processed_items' => 500,
 				'source' => 'maintenance',
+			], [
+				'max_total_seconds' => 900.0,
+				'max_idle_rounds' => 3,
 			]);
 		} catch (Throwable $throwable) {
 			Minz_Log::warning('AutoLabel queue maintenance failed: ' . $throwable->getMessage());
 		}
+	}
+
+	/**
+	 * @param array{max_runtime_seconds?:float,max_processed_items?:int,max_backfill_entries?:int|null,profile_timeout_cap_seconds?:int|null,source?:string} $sliceOptions
+	 * @param array{max_total_seconds?:float,max_idle_rounds?:int,sleep_seconds?:int} $drainOptions
+	 * @return array{ok:bool,done:bool,made_progress:bool,stats:array<string,int>,snapshot:array<string,mixed>,rounds:int,idle_rounds:int,timed_out:bool}
+	 */
+	public function drainQueueUntilIdle(array $sliceOptions = [], array $drainOptions = []): array {
+		$maxTotalSeconds = isset($drainOptions['max_total_seconds']) ? max(1.0, (float)$drainOptions['max_total_seconds']) : 600.0;
+		$maxIdleRounds = isset($drainOptions['max_idle_rounds']) ? max(1, (int)$drainOptions['max_idle_rounds']) : 3;
+		$sleepSeconds = isset($drainOptions['sleep_seconds']) ? max(0, (int)$drainOptions['sleep_seconds']) : 0;
+		$startedAt = microtime(true);
+		$rounds = 0;
+		$idleRounds = 0;
+		$aggregate = [
+			'processed_items' => 0,
+			'processed_entries' => 0,
+			'updated_entries' => 0,
+			'matched_tags' => 0,
+			'remaining_items' => 0,
+		];
+		$madeProgress = false;
+		$timedOut = false;
+		$snapshot = $this->queueStore()->snapshot();
+
+		while (!$this->queueSnapshotDone($snapshot)) {
+			if ((microtime(true) - $startedAt) >= $maxTotalSeconds) {
+				$timedOut = true;
+				break;
+			}
+
+			$beforeSnapshot = $snapshot;
+			$stats = $this->queueProcessor()->process($sliceOptions);
+			++$rounds;
+
+			$aggregate['processed_items'] += (int)($stats['processed_items'] ?? 0);
+			$aggregate['processed_entries'] += (int)($stats['processed_entries'] ?? 0);
+			$aggregate['updated_entries'] += (int)($stats['updated_entries'] ?? 0);
+			$aggregate['matched_tags'] += (int)($stats['matched_tags'] ?? 0);
+
+			$snapshot = $this->queueStore()->snapshot();
+			$aggregate['remaining_items'] = (int)(($snapshot['pending_entries'] ?? 0) + ($snapshot['pending_backfills'] ?? 0));
+
+			$roundMadeProgress = $this->queueStatsMadeProgress($stats) || $this->queueSnapshotImproved($beforeSnapshot, $snapshot);
+			$madeProgress = $madeProgress || $roundMadeProgress;
+
+			if ($this->queueSnapshotDone($snapshot)) {
+				$idleRounds = 0;
+				break;
+			}
+
+			if ($roundMadeProgress) {
+				$idleRounds = 0;
+			} else {
+				++$idleRounds;
+				if ($idleRounds >= $maxIdleRounds) {
+					break;
+				}
+			}
+
+			if ($sleepSeconds > 0) {
+				sleep($sleepSeconds);
+			}
+		}
+
+		return [
+			'ok' => true,
+			'done' => $this->queueSnapshotDone($snapshot),
+			'made_progress' => $madeProgress,
+			'stats' => $aggregate,
+			'snapshot' => $snapshot,
+			'rounds' => $rounds,
+			'idle_rounds' => $idleRounds,
+			'timed_out' => $timedOut,
+		];
 	}
 
 	public function renderNavigationEntry(): string {
@@ -252,5 +330,41 @@ final class AutoLabelExtension extends Minz_Extension {
 
 	private function fallbackDataPath(string $filename): string {
 		return rtrim($this->getPath(), '/\\') . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . ltrim($filename, '/\\');
+	}
+
+	/**
+	 * @param array<string,mixed> $snapshot
+	 */
+	private function queueSnapshotDone(array $snapshot): bool {
+		return (int)($snapshot['pending_entries'] ?? 0) === 0
+			&& (int)($snapshot['pending_backfills'] ?? 0) === 0
+			&& (int)($snapshot['pending_backfill_entries'] ?? 0) === 0;
+	}
+
+	/**
+	 * @param array<string,mixed> $before
+	 * @param array<string,mixed> $after
+	 */
+	private function queueSnapshotImproved(array $before, array $after): bool {
+		$beforePendingEntries = (int)($before['pending_entries'] ?? 0);
+		$afterPendingEntries = (int)($after['pending_entries'] ?? 0);
+		$beforePendingBackfills = (int)($before['pending_backfills'] ?? 0);
+		$afterPendingBackfills = (int)($after['pending_backfills'] ?? 0);
+		$beforePendingBackfillEntries = (int)($before['pending_backfill_entries'] ?? 0);
+		$afterPendingBackfillEntries = (int)($after['pending_backfill_entries'] ?? 0);
+
+		return $afterPendingEntries < $beforePendingEntries
+			|| $afterPendingBackfills < $beforePendingBackfills
+			|| $afterPendingBackfillEntries < $beforePendingBackfillEntries;
+	}
+
+	/**
+	 * @param array<string,mixed> $stats
+	 */
+	private function queueStatsMadeProgress(array $stats): bool {
+		return (int)($stats['processed_items'] ?? 0) > 0
+			|| (int)($stats['processed_entries'] ?? 0) > 0
+			|| (int)($stats['updated_entries'] ?? 0) > 0
+			|| (int)($stats['matched_tags'] ?? 0) > 0;
 	}
 }
