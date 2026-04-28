@@ -90,6 +90,7 @@ final class FreshExtension_autolabel_Controller extends FreshRSS_ActionControlle
 				'embedding_dimensions' => (int)Minz_Request::paramString('embedding_dimensions'),
 				'embedding_num_ctx' => (int)Minz_Request::paramString('embedding_num_ctx'),
 				'default_instruction' => Minz_Request::paramString('default_instruction'),
+				'thinking_mode' => Minz_Request::paramString('thinking_mode'),
 			]);
 
 			Minz_Request::good(_t('ext.auto_label.messages.profile_saved', $profile['name']), $redirect);

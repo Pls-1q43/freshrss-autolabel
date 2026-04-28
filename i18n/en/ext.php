@@ -44,6 +44,12 @@ return [
 				'enabled' => 'Enabled',
 				'supports_llm' => 'Enable LLM mode',
 				'supports_embedding' => 'Enable embedding mode',
+				'thinking_mode' => 'Thinking mode',
+			],
+			'thinking_modes' => [
+				'auto' => 'Auto (follow model default)',
+				'disabled' => 'Disable thinking (recommended for CPU)',
+				'enabled' => 'Force thinking on',
 			],
 			'help' => [
 				'batch_size' => 'This per-profile setting is the concurrent window size. AutoLabel sends up to this many article requests at once for the same profile, waits for that window to finish, then starts the next one.',
@@ -51,6 +57,7 @@ return [
 				'llm_settings' => 'LLM profiles only use the common request settings here. The actual classification prompt is configured later on each AutoLabel rule.',
 				'embedding_dimensions' => 'Optional vector dimensionality for embedding requests. Use 0 to keep the model default. Only sent to providers that support this parameter.',
 				'embedding_num_ctx' => 'Optional embedding context window for providers such as Ollama. Use 0 to keep the provider default. When set, AutoLabel also requests truncation for long inputs.',
+				'thinking_mode' => 'Applies only to LLM mode. Useful for models that support toggling a reasoning step (qwen3, deepseek-r1, gpt-oss, ...). Choose “Disable thinking” to cut response time and avoid timeouts on CPU deployments; “Auto” keeps the model default; “Force thinking” requests explicit reasoning. Any <think> blocks in the response are stripped automatically regardless of this setting.',
 			],
 		],
 			'rule' => [

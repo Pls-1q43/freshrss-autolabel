@@ -44,6 +44,12 @@ return [
 				'enabled' => 'Activé',
 				'supports_llm' => 'Activer le mode LLM',
 				'supports_embedding' => 'Activer le mode embedding',
+				'thinking_mode' => 'Mode de réflexion',
+			],
+			'thinking_modes' => [
+				'auto' => 'Auto (selon le défaut du modèle)',
+				'disabled' => 'Désactiver la réflexion (recommandé sur CPU)',
+				'enabled' => 'Forcer la réflexion',
 			],
 			'help' => [
 				'batch_size' => 'Ce réglage par profil définit la fenêtre de concurrence. AutoLabel envoie jusqu’à ce nombre de requêtes d’articles en même temps pour un même profil, attend la fin de cette fenêtre, puis passe à la suivante.',
@@ -51,6 +57,7 @@ return [
 				'llm_settings' => 'Les profils LLM n’utilisent ici que les paramètres de requête communs. Le prompt réel de classification se configure ensuite sur chaque règle AutoLabel.',
 				'embedding_dimensions' => 'Dimension vectorielle optionnelle pour les requêtes d’embedding. Utilisez 0 pour conserver la valeur par défaut du modèle. Ce champ n’est envoyé qu’aux fournisseurs qui prennent ce paramètre en charge.',
 				'embedding_num_ctx' => 'Fenêtre de contexte optionnelle pour les embeddings chez des fournisseurs comme Ollama. Utilisez 0 pour conserver la valeur par défaut du fournisseur. Quand ce champ est défini, AutoLabel demande aussi la troncature des entrées longues.',
+				'thinking_mode' => 'S’applique uniquement au mode LLM. Utile pour les modèles qui peuvent activer ou désactiver une phase de raisonnement (qwen3, deepseek-r1, gpt-oss, ...). Choisissez « Désactiver la réflexion » pour réduire la latence et éviter les dépassements de délai sur CPU ; « Auto » conserve le comportement par défaut du modèle ; « Forcer la réflexion » demande explicitement le raisonnement. Les blocs <think> dans la réponse sont retirés automatiquement quel que soit le réglage.',
 			],
 		],
 		'rule' => [

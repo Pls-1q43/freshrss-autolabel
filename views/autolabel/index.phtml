@@ -156,6 +156,23 @@ $projectGithubUrl = 'https://github.com/Pls-1q43/freshrss-autolabel';
 					<p class="autolabel-help"><?= _t('ext.auto_label.profile.help.batch_size') ?></p>
 
 					<div data-autolabel-profile-panel="llm">
+						<label>
+							<span><?= _t('ext.auto_label.profile.fields.thinking_mode') ?></span>
+							<select name="thinking_mode">
+								<?php
+								$thinkingModes = ['auto', 'disabled', 'enabled'];
+								$selectedThinking = (string)($profileForm['thinking_mode'] ?? 'auto');
+								if (!in_array($selectedThinking, $thinkingModes, true)) {
+									$selectedThinking = 'auto';
+								}
+								foreach ($thinkingModes as $thinkingMode): ?>
+									<option value="<?= $escape($thinkingMode) ?>" <?= $selectedThinking === $thinkingMode ? 'selected' : '' ?>>
+										<?= _t('ext.auto_label.profile.thinking_modes.' . $thinkingMode) ?>
+									</option>
+								<?php endforeach; ?>
+							</select>
+						</label>
+						<p class="autolabel-help"><?= _t('ext.auto_label.profile.help.thinking_mode') ?></p>
 						<p class="autolabel-help"><?= _t('ext.auto_label.profile.help.llm_settings') ?></p>
 					</div>
 

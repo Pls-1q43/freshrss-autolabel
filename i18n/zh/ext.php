@@ -44,6 +44,12 @@ return [
 				'enabled' => '启用',
 				'supports_llm' => '启用 LLM 模式',
 				'supports_embedding' => '启用 Embedding 模式',
+				'thinking_mode' => '思考模式',
+			],
+			'thinking_modes' => [
+				'auto' => '自动（跟随模型默认）',
+				'disabled' => '关闭思考（推荐 CPU 场景）',
+				'enabled' => '强制开启思考',
 			],
 			'help' => [
 				'batch_size' => '这是模型档案级别的并发窗口大小。同一个模型卡会一次并发发送这么多篇文章的请求，等这一批全部完成后再进入下一批。',
@@ -51,6 +57,7 @@ return [
 				'llm_settings' => 'LLM 模型卡在这里仅使用通用请求参数。真正的分类 Prompt 会在每条 AutoLabel 规则里单独配置。',
 				'embedding_dimensions' => '可选的 embedding 向量维度参数。填 0 表示使用模型默认值。只有支持这个参数的 provider 才会实际传递。',
 				'embedding_num_ctx' => '可选的 embedding 上下文窗口参数，适合像 Ollama 这样的 provider。填 0 表示使用 provider 默认值。设置后，AutoLabel 也会同时请求对超长输入进行截断。',
+				'thinking_mode' => '仅 LLM 模式生效：用于 qwen3、deepseek-r1、gpt-oss 等支持开关思考过程的模型。选择“关闭思考”可显著降低 CPU 下的耗时与超时概率；“自动”保持模型默认行为；“强制开启”仅在需要模型展开推理时使用。无论选择哪一项，返回内容中的 <think> 段都会被自动剥离。',
 			],
 		],
 		'rule' => [

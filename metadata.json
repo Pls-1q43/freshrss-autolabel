@@ -2,7 +2,7 @@
   "name": "AutoLabel",
   "author": "Pls",
   "description": "Automatically label FreshRSS entries with LLM or embedding-based classification, using administrator-managed model profiles and user-managed AutoLabels.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "entrypoint": "AutoLabel",
   "type": "system"
 }

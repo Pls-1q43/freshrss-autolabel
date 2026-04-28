@@ -33,6 +33,9 @@ final class AutoLabelSystemProfileRepository {
 	private const PROVIDERS = ['openai', 'anthropic', 'gemini', 'ollama'];
 	/** @var list<string> */
 	private const MODES = ['llm', 'embedding'];
+	/** @var list<string> */
+	public const THINKING_MODES = ['auto', 'disabled', 'enabled'];
+	public const DEFAULT_THINKING_MODE = 'auto';
 
 	/** @var AutoLabelExtension */
 	private $extension;
@@ -99,6 +102,7 @@ final class AutoLabelSystemProfileRepository {
 			'embedding_dimensions' => 0,
 			'embedding_num_ctx' => 0,
 			'default_instruction' => '',
+			'thinking_mode' => self::DEFAULT_THINKING_MODE,
 		];
 	}
 
@@ -218,6 +222,8 @@ final class AutoLabelSystemProfileRepository {
 		$profile['model'] = trim((string)$profile['model']);
 		$profile['api_key'] = trim((string)$profile['api_key']);
 		$profile['default_instruction'] = trim((string)$profile['default_instruction']);
+		$thinkingMode = is_string($profile['thinking_mode'] ?? null) ? trim((string)$profile['thinking_mode']) : '';
+		$profile['thinking_mode'] = in_array($thinkingMode, self::THINKING_MODES, true) ? $thinkingMode : self::DEFAULT_THINKING_MODE;
 
 		return $profile;
 	}
@@ -1549,6 +1555,56 @@ abstract class AutoLabelAbstractProvider implements AutoLabelProviderInterface {
 	}
 
 	/**
+	 * @param array<string,mixed> $profile
+	 */
+	protected function thinkingMode(array $profile): string {
+		$mode = is_string($profile['thinking_mode'] ?? null) ? trim((string)$profile['thinking_mode']) : '';
+		return in_array($mode, AutoLabelSystemProfileRepository::THINKING_MODES, true)
+			? $mode
+			: AutoLabelSystemProfileRepository::DEFAULT_THINKING_MODE;
+	}
+
+	/**
+	 * Appends provider-agnostic thinking control directives to a system prompt.
+	 * Safe no-op for models that do not understand them.
+	 *
+	 * @param array<string,mixed> $profile
+	 */
+	protected function applyThinkingDirectiveToSystemPrompt(array $profile, string $systemPrompt): string {
+		switch ($this->thinkingMode($profile)) {
+			case 'disabled':
+				return rtrim($systemPrompt) . "\n\nDo not output any reasoning or <think> blocks. Respond with the final JSON answer only. /no_think";
+			case 'enabled':
+				return rtrim($systemPrompt) . "\n\n/think";
+			case 'auto':
+			default:
+				return $systemPrompt;
+		}
+	}
+
+	/**
+	 * Strips any <think>...</think> reasoning blocks that some models (e.g. qwen3, deepseek-r1)
+	 * emit before their final answer. Works regardless of the thinking_mode setting so that
+	 * downstream JSON parsing does not choke on mixed output.
+	 */
+	protected function stripThinkingContent(string $text): string {
+		if ($text === '') {
+			return $text;
+		}
+		// Remove complete <think>...</think> blocks (including any whitespace around them).
+		$stripped = preg_replace('#\s*<think\b[^>]*>.*?</think>\s*#is', '', $text);
+		if (!is_string($stripped)) {
+			$stripped = $text;
+		}
+		// Handle orphaned openings: if a closing </think> exists without a matching open, drop everything up to it.
+		if (stripos($stripped, '</think>') !== false && stripos($stripped, '<think') === false) {
+			$pos = stripos($stripped, '</think>');
+			$stripped = substr($stripped, $pos + strlen('</think>'));
+		}
+		return trim($stripped);
+	}
+
+	/**
 	 * @param array<int,mixed> $responseOutput
 	 */
 	protected function extractOpenAIOutputText(array $responseOutput): string {
@@ -1607,6 +1663,8 @@ final class AutoLabelOpenAIProvider extends AutoLabelAbstractProvider {
 			throw new RuntimeException('OpenAI profile requires an API key.');
 		}
 
+		$systemPrompt = $this->applyThinkingDirectiveToSystemPrompt($profile, $systemPrompt);
+
 		return [
 			'id' => '',
 			'url' => $this->appendPath($this->baseUrl($profile, 'https://api.openai.com'), '/v1/responses'),
@@ -1631,9 +1689,10 @@ final class AutoLabelOpenAIProvider extends AutoLabelAbstractProvider {
 
 	public function parseTextResponse(array $response): string {
 		$json = is_array($response['json']) ? $response['json'] : [];
-		return is_string($json['output_text'] ?? null)
+		$text = is_string($json['output_text'] ?? null)
 			? $json['output_text']
 			: $this->extractOpenAIOutputText(is_array($json['output'] ?? null) ? $json['output'] : []);
+		return $this->stripThinkingContent($text);
 	}
 
 	public function buildSingleEmbeddingRequest(array $profile, string $text, ?string $instruction = null): array {
@@ -1715,6 +1774,8 @@ final class AutoLabelAnthropicProvider extends AutoLabelAbstractProvider {
 			throw new RuntimeException('Anthropic profile requires an API key.');
 		}
 
+		$systemPrompt = $this->applyThinkingDirectiveToSystemPrompt($profile, $systemPrompt);
+
 		return [
 			'id' => '',
 			'url' => $this->appendPath($this->baseUrl($profile, 'https://api.anthropic.com'), '/v1/messages'),
@@ -1744,7 +1805,7 @@ final class AutoLabelAnthropicProvider extends AutoLabelAbstractProvider {
 				$text .= $block['text'];
 			}
 		}
-		return $text;
+		return $this->stripThinkingContent($text);
 	}
 
 	public function buildSingleEmbeddingRequest(array $profile, string $text, ?string $instruction = null): array {
@@ -1762,6 +1823,8 @@ final class AutoLabelGeminiProvider extends AutoLabelAbstractProvider {
 		if ($apiKey === '') {
 			throw new RuntimeException('Gemini profile requires an API key.');
 		}
+
+		$systemPrompt = $this->applyThinkingDirectiveToSystemPrompt($profile, $systemPrompt);
 
 		$model = rawurlencode((string)$profile['model']);
 		return [
@@ -1790,7 +1853,7 @@ final class AutoLabelGeminiProvider extends AutoLabelAbstractProvider {
 
 	public function parseTextResponse(array $response): string {
 		$json = is_array($response['json']) ? $response['json'] : [];
-		return (string)($json['candidates'][0]['content']['parts'][0]['text'] ?? '');
+		return $this->stripThinkingContent((string)($json['candidates'][0]['content']['parts'][0]['text'] ?? ''));
 	}
 
 	public function buildSingleEmbeddingRequest(array $profile, string $text, ?string $instruction = null): array {
@@ -1891,24 +1954,36 @@ final class AutoLabelOllamaProvider extends AutoLabelAbstractProvider {
 			$headers['Authorization'] = 'Bearer ' . $this->apiKey($profile);
 		}
 
+		$thinkingMode = $this->thinkingMode($profile);
+		$systemPrompt = $this->applyThinkingDirectiveToSystemPrompt($profile, $systemPrompt);
+
+		$payload = [
+			'model' => (string)$profile['model'],
+			'messages' => [
+				[
+					'role' => 'system',
+					'content' => $systemPrompt,
+				],
+				[
+					'role' => 'user',
+					'content' => $prompt,
+				],
+			],
+			'stream' => false,
+			'format' => 'json',
+		];
+		// Ollama 0.3.12+ natively understands the "think" flag for reasoning models (qwen3, deepseek-r1, ...).
+		// Older versions safely ignore unknown keys, so sending it is backwards compatible.
+		if ($thinkingMode === 'disabled') {
+			$payload['think'] = false;
+		} elseif ($thinkingMode === 'enabled') {
+			$payload['think'] = true;
+		}
+
 		return [
 			'id' => '',
 			'url' => $this->appendPath($this->baseUrl($profile, 'http://127.0.0.1:11434'), '/api/chat'),
-			'payload' => [
-				'model' => (string)$profile['model'],
-				'messages' => [
-					[
-						'role' => 'system',
-						'content' => $systemPrompt,
-					],
-					[
-						'role' => 'user',
-						'content' => $prompt,
-					],
-				],
-				'stream' => false,
-				'format' => 'json',
-			],
+			'payload' => $payload,
 			'headers' => $headers,
 			'timeout_seconds' => $this->timeout($profile),
 		];
@@ -1916,7 +1991,7 @@ final class AutoLabelOllamaProvider extends AutoLabelAbstractProvider {
 
 	public function parseTextResponse(array $response): string {
 		$json = is_array($response['json']) ? $response['json'] : [];
-		return (string)($json['message']['content'] ?? '');
+		return $this->stripThinkingContent((string)($json['message']['content'] ?? ''));
 	}
 
 	public function buildSingleEmbeddingRequest(array $profile, string $text, ?string $instruction = null): array {
