@@ -3020,10 +3020,15 @@ final class AutoLabelEntryPersistence {
 	 */
 	public static function updateTags($entryDao, FreshRSS_Entry $entry, array $tags): array {
 		$tags = self::normalizeTags($tags);
-		$resolvedTags = self::ensureTagsExist($tags);
-		$appliedTags = $resolvedTags['applied_tags'];
+		$existingTags = self::normalizeTags(is_array($entry->tags(false)) ? $entry->tags(false) : []);
+		$newTags = array_values(array_filter(
+			$tags,
+			static fn (string $tag): bool => !in_array($tag, $existingTags, true)
+		));
+		$resolvedTags = self::ensureTagsExist($newTags);
+		$appliedTags = array_values(array_unique(array_merge($existingTags, $resolvedTags['applied_tags'])));
 		$failedTags = $resolvedTags['failed_tags'];
-		if (count($appliedTags) === 0) {
+		if (count($resolvedTags['applied_tags']) === 0) {
 			return [
 				'updated' => false,
 				'applied_tags' => [],
@@ -3056,7 +3061,7 @@ final class AutoLabelEntryPersistence {
 				return false;
 			}
 
-			self::ensureEntryTagLinks($entry, $appliedTags);
+			self::ensureEntryTagLinks($entry, $resolvedTags['applied_tags']);
 			return true;
 		});
 
@@ -3096,10 +3101,23 @@ final class AutoLabelEntryPersistence {
 				continue;
 			}
 
-			$tag = $tagDao->searchByName($tagName);
+			$tag = null;
+			foreach (self::tagLookupCandidates($tagName) as $candidateName) {
+				$candidate = $tagDao->searchByName($candidateName);
+				if ($candidate instanceof FreshRSS_Tag && $candidate->id() > 0) {
+					$tag = $candidate;
+					break;
+				}
+			}
 			if ($tag instanceof FreshRSS_Tag && $tag->id() > 0) {
+				$appliedTagName = ltrim(trim((string)$tag->name()), '#');
+				if ($appliedTagName === '') {
+					$appliedTagName = ltrim($tagName, '#');
+				}
 				self::$tagIdsByName[$tagName] = $tag->id();
-				$appliedTags[] = $tagName;
+				self::$tagIdsByName[$appliedTagName] = $tag->id();
+				self::$tagIdsByName[(string)$tag->name()] = $tag->id();
+				$appliedTags[] = $appliedTagName;
 				continue;
 			}
 
@@ -3111,6 +3129,19 @@ final class AutoLabelEntryPersistence {
 			'applied_tags' => array_values(array_unique($appliedTags)),
 			'failed_tags' => array_values(array_unique($failedTags)),
 		];
+	}
+
+	/**
+	 * @return list<string>
+	 */
+	private static function tagLookupCandidates(string $tagName): array {
+		$trimmed = trim($tagName);
+		$withoutHash = ltrim($trimmed, '#');
+		return array_values(array_unique(array_filter([
+			$trimmed,
+			$withoutHash,
+			$withoutHash === '' ? '' : '#' . $withoutHash,
+		], static fn (string $candidate): bool => $candidate !== '')));
 	}
 
 	/**

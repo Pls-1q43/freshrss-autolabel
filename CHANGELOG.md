@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+
+- Fix tag persistence diagnostics so `failed_tags` only reports newly matched target tags that cannot be resolved
+- Resolve FreshRSS target tags by both `tag` and `#tag` names to avoid false failures when stored tag names include the hash prefix
+
 ## 0.5.0
 
 - Add LLM aggregate classification so one request can classify multiple articles for one model profile
