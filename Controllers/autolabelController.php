@@ -61,8 +61,6 @@ final class FreshExtension_autolabel_Controller extends FreshRSS_ActionControlle
 				? ($editProfileId !== '' ? ($profileRepository->find($editProfileId) ?? $profileRepository->defaultProfile()) : $profileRepository->defaultProfile())
 				: $profileRepository->defaultProfile(),
 			'rule_form' => $editRuleId !== '' ? ($ruleRepository->find($editRuleId) ?? $ruleRepository->defaultRule()) : $ruleRepository->defaultRule(),
-			'style_url' => $this->extension->getFileUrl('style.css'),
-			'script_url' => $this->extension->getFileUrl('script.js'),
 		]);
 	}
 
@@ -87,6 +85,8 @@ final class FreshExtension_autolabel_Controller extends FreshRSS_ActionControlle
 				'timeout_seconds' => (int)Minz_Request::paramString('timeout_seconds'),
 				'content_max_chars' => (int)Minz_Request::paramString('content_max_chars'),
 				'batch_size' => (int)Minz_Request::paramString('batch_size'),
+				'json_mode' => Minz_Request::paramBoolean('json_mode'),
+				'llm_options_json' => Minz_Request::paramString('llm_options_json', true),
 				'embedding_dimensions' => (int)Minz_Request::paramString('embedding_dimensions'),
 				'embedding_num_ctx' => (int)Minz_Request::paramString('embedding_num_ctx'),
 				'default_instruction' => Minz_Request::paramString('default_instruction'),

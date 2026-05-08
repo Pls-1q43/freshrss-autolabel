@@ -20,6 +20,8 @@ Fonctionnalités principales :
 - règles AutoLabel gérées par utilisateur
 - mode LLM et mode embeddings
 - plusieurs tags FreshRSS existants par règle
+- classification LLM agrégée pour plusieurs articles dans une seule requête
+- classification LLM multi-règles pour plusieurs prompts dans une seule requête
 - file asynchrone pour les nouveaux articles et le rétro-remplissage
 - fenêtres de concurrence si PHP fournit `curl_multi`
 
@@ -80,16 +82,22 @@ Puis activez l’extension depuis FreshRSS.
 - provider
 - nom du modèle
 - mode (`LLM` / `Embedding`)
-- Base URL
+- URL du point d’accès
 - clé API
 - délai d’expiration
 - longueur maximale du contenu
-- taille de fenêtre de concurrence (`batch_size`)
+- taille de fenêtre de lot (`batch_size`)
 - dimensions d’embedding
 - `Embedding num_ctx`
 - instruction par défaut
 
-`batch_size` signifie **taille de fenêtre de concurrence**, et non nombre de traitements strictement sériels.
+Pour les profils LLM, `batch_size` signifie **fenêtre d’articles agrégés** : AutoLabel envoie jusqu’à ce nombre d’articles dans une seule requête LLM et demande un résultat par paire article/règle.
+
+Pour les profils LLM, l’URL du point d’accès doit être l’endpoint complet, par exemple `https://api.openai.com/v1/responses` ou un endpoint `/chat/completions` compatible OpenAI.
+
+Les requêtes LLM agrégées peuvent prendre plus de temps que les tests sur un seul article. Réglez le délai du profil selon la taille de fenêtre et le nombre de règles. Les backends compatibles OpenAI qui exposent des options de modèle de chat peuvent être configurés via le JSON d’options supplémentaires, par exemple `{"chat_template_kwargs":{"reasoning_effort":"no_think"}}`; pour les autres backends, utilisez les champs documentés par leur API.
+
+Pour les profils embedding, `batch_size` reste la **fenêtre de lot/concurrence**. La concurrence des lots embedding nécessite toujours PHP `curl_multi`.
 
 ### Côté utilisateur
 
@@ -128,6 +136,8 @@ La consommation de la file peut se faire via :
   - vérifier que la maintenance FreshRSS s’exécute réellement
 - aucune concurrence visible :
   - vérifier que `curl_multi` est bien disponible en PHP
+- les lots LLM fonctionnent mais pas les embeddings :
+  - vérifier que `curl_multi` est bien disponible en PHP ; les lots LLM agrégés ne l’exigent pas, mais les lots embedding l’exigent
 - délais Ollama sur les embeddings :
   - vérifier `content_max_chars`, `timeout_seconds`, `embedding_num_ctx` et les logs Ollama
 - tags non appliqués :

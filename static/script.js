@@ -1,4 +1,59 @@
+window.__AutoLabelScriptVersion = '0.5.0-endpoint-url-v5';
+console.info('AutoLabel script loaded:', window.__AutoLabelScriptVersion);
+
 document.addEventListener('DOMContentLoaded', () => {
+  const findRuleForm = () => document.querySelector('[data-autolabel-rule-form]') || document.querySelector('form[action*="saveRule"]');
+
+  const findRuleNameInput = (form) => {
+    if (!form) {
+      return null;
+    }
+
+    return form.querySelector('[data-autolabel-rule-name]') || form.querySelector('input[name="name"]');
+  };
+
+  const findRuleTargetTagsSelect = (form) => {
+    if (!form) {
+      return null;
+    }
+
+    return form.querySelector('[data-autolabel-target-tags]')
+      || Array.from(form.querySelectorAll('select')).find((select) => select.name === 'target_tags[]');
+  };
+
+  let lastGeneratedRuleName = '';
+  let lastSelectedRuleTags = '';
+
+  const syncRuleNameFromSelectedTags = () => {
+    const form = findRuleForm();
+    const nameInput = findRuleNameInput(form);
+    const targetTagsSelect = findRuleTargetTagsSelect(form);
+    if (!nameInput || !targetTagsSelect) {
+      return;
+    }
+
+    const selectedTags = Array.from(targetTagsSelect.options)
+      .filter((option) => option.selected)
+      .map((option) => option.value.trim())
+      .filter((value) => value !== '');
+    const selectedKey = selectedTags.join('\n');
+    const generatedName = selectedTags.join(', ');
+    const currentName = nameInput.value.trim();
+
+    if (currentName !== '' && currentName !== lastGeneratedRuleName) {
+      lastSelectedRuleTags = selectedKey;
+      return;
+    }
+
+    if (selectedKey === lastSelectedRuleTags && currentName === generatedName) {
+      return;
+    }
+
+    nameInput.value = generatedName;
+    lastGeneratedRuleName = generatedName;
+    lastSelectedRuleTags = selectedKey;
+  };
+
   const profileForm = document.querySelector('[data-autolabel-profile-form]');
   if (profileForm) {
     const providerSelect = profileForm.querySelector('[data-autolabel-provider]');
@@ -7,12 +62,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const llmPanel = profileForm.querySelector('[data-autolabel-profile-panel="llm"]');
     const embeddingPanel = profileForm.querySelector('[data-autolabel-profile-panel="embedding"]');
     const providerDefaults = {
-      openai: 'https://api.openai.com',
-      anthropic: 'https://api.anthropic.com',
-      gemini: 'https://generativelanguage.googleapis.com',
-      ollama: 'http://127.0.0.1:11434',
+      llm: {
+        openai: 'https://api.openai.com/v1/responses',
+        anthropic: 'https://api.anthropic.com/v1/messages',
+        gemini: 'https://generativelanguage.googleapis.com',
+        ollama: 'http://127.0.0.1:11434/api/chat',
+      },
+      embedding: {
+        openai: 'https://api.openai.com/v1/embeddings',
+        anthropic: '',
+        gemini: 'https://generativelanguage.googleapis.com',
+        ollama: 'http://127.0.0.1:11434/api/embed',
+      },
     };
     let previousProvider = providerSelect?.value ?? '';
+    let previousMode = profileModeSelect?.value === 'embedding' ? 'embedding' : 'llm';
 
     const applyProfileMode = () => {
       if (!profileModeSelect || !llmPanel || !embeddingPanel) {
@@ -45,14 +109,17 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const nextProvider = providerSelect.value;
-      if (nextProvider === previousProvider) {
+      const nextMode = profileModeSelect?.value === 'embedding' ? 'embedding' : 'llm';
+      if (nextProvider === previousProvider && nextMode === previousMode && baseUrlInput.value.trim() !== '') {
         return;
       }
 
       const currentValue = baseUrlInput.value.trim();
-      const previousDefault = providerDefaults[previousProvider] ?? '';
-      const nextDefault = providerDefaults[nextProvider] ?? '';
-      const canReplace = currentValue === '' || currentValue === previousDefault;
+      const knownDefaults = Object.values(providerDefaults)
+        .flatMap((defaults) => Object.values(defaults))
+        .filter((value) => value !== '');
+      const nextDefault = providerDefaults[nextMode]?.[nextProvider] ?? '';
+      const canReplace = currentValue === '' || knownDefaults.includes(currentValue);
 
       if (nextProvider === 'ollama' && nextDefault !== '') {
         baseUrlInput.value = nextDefault;
@@ -61,6 +128,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       previousProvider = nextProvider;
+      previousMode = nextMode;
     };
 
     const syncProvider = () => {
@@ -73,20 +141,27 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     providerSelect?.addEventListener('change', syncProvider);
-    profileModeSelect?.addEventListener('change', applyProfileMode);
+    profileModeSelect?.addEventListener('change', () => {
+      applyProfileMode();
+      syncBaseUrlForProviderChange();
+    });
     applyProviderCapabilities();
     applyProfileMode();
     if (providerSelect) {
       previousProvider = providerSelect.value;
     }
+    previousMode = profileModeSelect?.value === 'embedding' ? 'embedding' : 'llm';
   }
 
-  const ruleForm = document.querySelector('[data-autolabel-rule-form]');
+  const ruleForm = findRuleForm();
   if (ruleForm) {
     const profileSelect = ruleForm.querySelector('[data-autolabel-profile-select]');
     const modeSelect = ruleForm.querySelector('[data-autolabel-mode-select]');
+    const nameInput = findRuleNameInput(ruleForm);
+    const targetTagsSelect = findRuleTargetTagsSelect(ruleForm);
     const llmPanel = ruleForm.querySelector('[data-autolabel-mode-panel="llm"]');
     const embeddingPanel = ruleForm.querySelector('[data-autolabel-mode-panel="embedding"]');
+    lastGeneratedRuleName = nameInput?.value.trim() ?? '';
 
     const syncRuleForm = () => {
       if (!profileSelect || !modeSelect || !llmPanel || !embeddingPanel) {
@@ -117,7 +192,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
     profileSelect?.addEventListener('change', syncRuleForm);
     modeSelect?.addEventListener('change', syncRuleForm);
+    ['change', 'input', 'click', 'mouseup', 'keyup'].forEach((eventName) => {
+      targetTagsSelect?.addEventListener(eventName, () => window.setTimeout(syncRuleNameFromSelectedTags, 0));
+    });
+    nameInput?.addEventListener('input', () => {
+      if (nameInput.value.trim() === '') {
+        lastGeneratedRuleName = '';
+        lastSelectedRuleTags = '';
+        window.setTimeout(syncRuleNameFromSelectedTags, 0);
+      }
+    });
     syncRuleForm();
+    if (!nameInput?.value.trim()) {
+      syncRuleNameFromSelectedTags();
+    }
+  }
+
+  ['change', 'input', 'click', 'mouseup', 'keyup'].forEach((eventName) => {
+    document.addEventListener(eventName, (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      if (target.matches('select[name="target_tags[]"], [data-autolabel-target-tags], input[name="name"], [data-autolabel-rule-name]')) {
+        window.setTimeout(syncRuleNameFromSelectedTags, 0);
+      }
+    });
+  });
+  for (let index = 1; index <= 10; index++) {
+    window.setTimeout(syncRuleNameFromSelectedTags, index * 300);
   }
 
   const queueForm = document.querySelector('.autolabel-card form[action*="processQueue"]');
@@ -470,3 +573,101 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 });
+
+(function () {
+  var lastGeneratedName = '';
+  var lastSelectedTags = '';
+
+  function findRuleForm() {
+    return document.querySelector('[data-autolabel-rule-form]') || document.querySelector('form[action*="saveRule"]');
+  }
+
+  function findNameInput(form) {
+    if (!form) {
+      return null;
+    }
+    return form.querySelector('[data-autolabel-rule-name]') || form.querySelector('input[name="name"]');
+  }
+
+  function findTargetTagsSelect(form) {
+    var selects;
+    var index;
+    if (!form) {
+      return null;
+    }
+    if (form.querySelector('[data-autolabel-target-tags]')) {
+      return form.querySelector('[data-autolabel-target-tags]');
+    }
+    selects = form.querySelectorAll('select');
+    for (index = 0; index < selects.length; index += 1) {
+      if (selects[index].name === 'target_tags[]') {
+        return selects[index];
+      }
+    }
+    return null;
+  }
+
+  function selectedTagNames(select) {
+    var tags = [];
+    var index;
+    if (!select || !select.options) {
+      return tags;
+    }
+    for (index = 0; index < select.options.length; index += 1) {
+      if (select.options[index].selected && select.options[index].value.trim() !== '') {
+        tags.push(select.options[index].value.trim());
+      }
+    }
+    return tags;
+  }
+
+  function syncRuleName() {
+    var form = findRuleForm();
+    var nameInput = findNameInput(form);
+    var targetTagsSelect = findTargetTagsSelect(form);
+    var tags = selectedTagNames(targetTagsSelect);
+    var selectedKey = tags.join('\n');
+    var generatedName = tags.join(', ');
+    var currentName;
+
+    if (!nameInput || !targetTagsSelect) {
+      return;
+    }
+
+    currentName = nameInput.value.trim();
+    if (currentName !== '' && currentName !== lastGeneratedName) {
+      lastSelectedTags = selectedKey;
+      return;
+    }
+
+    if (currentName === generatedName && selectedKey === lastSelectedTags) {
+      return;
+    }
+
+    nameInput.value = generatedName;
+    lastGeneratedName = generatedName;
+    lastSelectedTags = selectedKey;
+  }
+
+  function handleEvent(event) {
+    var target = event.target;
+    if (!target || !target.matches) {
+      return;
+    }
+    if (target.matches('select[name="target_tags[]"], [data-autolabel-target-tags], input[name="name"], [data-autolabel-rule-name]')) {
+      window.setTimeout(syncRuleName, 0);
+    }
+  }
+
+  ['change', 'input', 'click', 'mouseup', 'keyup'].forEach(function (eventName) {
+    document.addEventListener(eventName, handleEvent, true);
+  });
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', syncRuleName);
+  } else {
+    syncRuleName();
+  }
+  for (var index = 1; index <= 20; index += 1) {
+    window.setTimeout(syncRuleName, index * 250);
+  }
+}());

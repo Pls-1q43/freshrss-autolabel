@@ -20,6 +20,8 @@ AutoLabel lets administrators publish approved model profiles and lets each user
 - User-managed AutoLabel rules
 - LLM mode and embedding mode
 - Multiple existing FreshRSS target tags per rule
+- LLM aggregate classification for multiple articles in one request
+- LLM multi-rule classification for multiple prompts in one request
 - Asynchronous queue processing for new entries and backfill jobs
 - Optional concurrent queue windows when PHP `curl_multi` is available
 
@@ -82,16 +84,22 @@ Administrators manage:
 - provider
 - model
 - mode (`LLM` or `Embedding`)
-- base URL
+- endpoint URL
 - API key
 - timeout
 - max content length
-- concurrency window (`batch_size`)
+- batch window (`batch_size`)
 - embedding dimensions
 - embedding `num_ctx`
 - default instruction
 
-`batch_size` means **concurrency window size**, not a serial batch count.
+For LLM profiles, `batch_size` means the **aggregate article window**: AutoLabel sends up to this many articles in one LLM classification request and asks for a result per article/rule pair.
+
+For LLM profiles, the endpoint URL should be the full request endpoint, such as `https://api.openai.com/v1/responses` or an OpenAI-compatible `/chat/completions` endpoint.
+
+LLM aggregate requests can take longer than single-article tests. Set the profile timeout high enough for the selected article window and rule count. OpenAI-compatible backends that expose chat-template options can be configured through the extra request options JSON, for example `{"chat_template_kwargs":{"reasoning_effort":"no_think"}}`; use the exact request body fields documented by your backend.
+
+For embedding profiles, `batch_size` remains the **batch/concurrency window**. Embedding batch concurrency still requires PHP `curl_multi`.
 
 ### User side
 
@@ -132,6 +140,8 @@ Queue consumption can happen through:
   - confirm FreshRSS maintenance is actually running
 - No visible concurrency:
   - confirm PHP has `curl_multi`
+- LLM batches run but embeddings do not:
+  - confirm PHP has `curl_multi`; LLM aggregate batches do not require it, but embedding batches do
 - Ollama embedding timeouts:
   - review `content_max_chars`, `timeout_seconds`, `embedding_num_ctx`, and Ollama logs together
 - Tags are not applied:

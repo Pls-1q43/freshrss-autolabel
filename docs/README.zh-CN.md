@@ -20,6 +20,8 @@ AutoLabel 采用混合权限模型：
 - 用户管理 AutoLabel 规则
 - LLM 模式与 Embedding 模式
 - 每条规则可绑定多个 FreshRSS 已有标签
+- LLM 聚合判断：多篇文章可以合并为一次请求
+- LLM 多规则判断：一篇文章可以在一次请求里判断多条独立 Prompt
 - 新文章与回填统一走异步队列
 - 若 PHP 提供 `curl_multi`，可启用并发窗口
 
@@ -80,16 +82,22 @@ git clone https://github.com/Pls-1q43/freshrss-autolabel.git xExtension-AutoLabe
 - Provider
 - 模型名
 - 模式（LLM / Embedding）
-- Base URL
+- 端点 URL
 - API Key
 - 超时
 - 最大内容长度
-- 并发窗口大小（`batch_size`）
+- 批量窗口大小（`batch_size`）
 - Embedding 维度
 - Embedding `num_ctx`
 - 默认 instruction
 
-其中 `batch_size` 表示**并发窗口大小**，不是串行批次数。
+对 LLM 模型档案，`batch_size` 表示**聚合文章窗口**：AutoLabel 会把最多这么多篇文章合并到一次 LLM 分类请求中，并要求模型返回每篇文章、每条规则的判断结果。
+
+对 LLM 模型档案，端点 URL 应填写完整请求端点，例如 `https://api.openai.com/v1/responses` 或 OpenAI 兼容的 `/chat/completions` 端点。
+
+LLM 聚合请求会比单篇测试耗时更长。请根据文章窗口和规则数量设置足够的模型超时。OpenAI 兼容后端若暴露 chat-template 参数，可通过额外请求参数 JSON 配置，例如 `{"chat_template_kwargs":{"reasoning_effort":"no_think"}}`；其他后端请按其文档填写请求体字段。
+
+对 Embedding 模型档案，`batch_size` 仍表示**批量/并发窗口大小**。Embedding 批量并发仍依赖 PHP `curl_multi`。
 
 ### 用户负责
 
@@ -128,6 +136,8 @@ AutoLabel 的异步队列主要处理：
   - 先确认 FreshRSS maintenance 是否真的在运行
 - 看不到并发：
   - 先确认 PHP 是否启用了 `curl_multi`
+- LLM 批量可运行但 Embedding 不运行：
+  - 先确认 PHP 是否启用了 `curl_multi`；LLM 聚合批量不依赖它，但 Embedding 批量依赖它
 - Ollama Embedding 超时：
   - 联合检查 `content_max_chars`、`timeout_seconds`、`embedding_num_ctx` 与 Ollama 日志
 - 标签未打上：

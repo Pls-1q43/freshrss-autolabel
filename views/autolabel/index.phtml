@@ -27,8 +27,6 @@ $queueManualStatusUrl = (string)($viewState['queue_manual_status_url'] ?? '');
 $queueCronUrl = (string)($viewState['queue_cron_url'] ?? '');
 $tagManagementUrl = (string)($viewState['tag_management_url'] ?? '');
 $resolver = $viewState['profile_capabilities'] ?? null;
-$styleUrl = (string)($viewState['style_url'] ?? '');
-$scriptUrl = (string)($viewState['script_url'] ?? '');
 $canAdmin = !empty($viewState['can_admin']);
 $csrfToken = class_exists('FreshRSS_Auth') && method_exists('FreshRSS_Auth', 'csrfToken')
 	? (string)FreshRSS_Auth::csrfToken()
@@ -45,6 +43,7 @@ $manualQueueStatusText = match ($manualQueueStatus) {
 };
 $diagnosticModeLabel = static function (string $mode): string {
 	return match ($mode) {
+		'aggregate' => _t('ext.auto_label.diagnostics.summary.mode.aggregate'),
 		'concurrent' => _t('ext.auto_label.diagnostics.summary.mode.concurrent'),
 		'fallback_retry' => _t('ext.auto_label.diagnostics.summary.mode.fallback_retry'),
 		'fallback_failed' => _t('ext.auto_label.diagnostics.summary.mode.fallback_failed'),
@@ -55,13 +54,6 @@ $diagnosticModeLabel = static function (string $mode): string {
 $authorBlogUrl = 'https://1q43.blog';
 $projectGithubUrl = 'https://github.com/Pls-1q43/freshrss-autolabel';
 ?>
-
-<?php if ($styleUrl !== ''): ?>
-	<link rel="stylesheet" href="<?= $escape($styleUrl) ?>" />
-<?php endif; ?>
-<?php if ($scriptUrl !== ''): ?>
-	<script src="<?= $escape($scriptUrl) ?>" defer></script>
-<?php endif; ?>
 
 <main class="autolabel-page">
 	<header class="autolabel-hero">
@@ -130,6 +122,7 @@ $projectGithubUrl = 'https://github.com/Pls-1q43/freshrss-autolabel';
 						<span><?= _t('ext.auto_label.profile.fields.base_url') ?></span>
 						<input type="text" name="base_url" value="<?= $escape($profileForm['base_url'] ?? '') ?>" />
 					</label>
+					<p class="autolabel-help"><?= _t('ext.auto_label.profile.help.base_url') ?></p>
 
 					<label>
 						<span><?= _t('ext.auto_label.profile.fields.api_key') ?></span>
@@ -139,7 +132,7 @@ $projectGithubUrl = 'https://github.com/Pls-1q43/freshrss-autolabel';
 					<div class="autolabel-form__columns">
 						<label>
 							<span><?= _t('ext.auto_label.profile.fields.timeout_seconds') ?></span>
-							<input type="number" name="timeout_seconds" min="3" max="120" value="<?= $escape($profileForm['timeout_seconds'] ?? 15) ?>" />
+							<input type="number" name="timeout_seconds" min="3" max="600" value="<?= $escape($profileForm['timeout_seconds'] ?? 60) ?>" />
 						</label>
 
 						<label>
@@ -174,6 +167,19 @@ $projectGithubUrl = 'https://github.com/Pls-1q43/freshrss-autolabel';
 						</label>
 						<p class="autolabel-help"><?= _t('ext.auto_label.profile.help.thinking_mode') ?></p>
 						<p class="autolabel-help"><?= _t('ext.auto_label.profile.help.llm_settings') ?></p>
+						<div class="autolabel-checkboxes">
+							<label class="checkbox">
+								<input type="checkbox" name="json_mode" value="1" <?= !empty($profileForm['json_mode']) ? 'checked' : '' ?> />
+								<span><?= _t('ext.auto_label.profile.fields.json_mode') ?></span>
+							</label>
+						</div>
+						<p class="autolabel-help"><?= _t('ext.auto_label.profile.help.json_mode') ?></p>
+
+						<label>
+							<span><?= _t('ext.auto_label.profile.fields.llm_options_json') ?></span>
+							<textarea name="llm_options_json" rows="4" placeholder='{"chat_template_kwargs":{"reasoning_effort":"no_think"}}'><?= $escape($profileForm['llm_options_json'] ?? '') ?></textarea>
+						</label>
+						<p class="autolabel-help"><?= _t('ext.auto_label.profile.help.llm_options_json') ?></p>
 					</div>
 
 					<div data-autolabel-profile-panel="embedding">
@@ -277,12 +283,12 @@ $projectGithubUrl = 'https://github.com/Pls-1q43/freshrss-autolabel';
 
 					<label>
 						<span><?= _t('ext.auto_label.rule.fields.name') ?></span>
-						<input type="text" name="name" value="<?= $escape($ruleForm['name'] ?? '') ?>" />
+						<input type="text" name="name" value="<?= $escape($ruleForm['name'] ?? '') ?>" data-autolabel-rule-name />
 					</label>
 
 					<label>
 						<span><?= _t('ext.auto_label.rule.fields.target_tags') ?></span>
-						<select name="target_tags[]" required multiple <?= count($availableTags) === 0 ? 'disabled' : '' ?> size="<?= $escape((string)max(4, min(10, count($availableTags) > 0 ? count($availableTags) : 4))) ?>">
+						<select name="target_tags[]" required multiple <?= count($availableTags) === 0 ? 'disabled' : '' ?> size="<?= $escape((string)max(4, min(10, count($availableTags) > 0 ? count($availableTags) : 4))) ?>" data-autolabel-target-tags>
 							<?php foreach ($availableTags as $tagName): ?>
 								<option
 									value="<?= $escape($tagName) ?>"
@@ -578,6 +584,18 @@ $projectGithubUrl = 'https://github.com/Pls-1q43/freshrss-autolabel';
 										<?= $escape($diagnosticModeLabel((string)($diagnostic['execution_mode'] ?? 'concurrent'))) ?>
 									</span>
 									<span class="badge badge--muted">
+										<?= _t('ext.auto_label.diagnostics.summary.aggregate_entries') ?>:
+										<?= $escape((string)($diagnostic['aggregate_entries'] ?? 0)) ?>
+									</span>
+									<span class="badge badge--muted">
+										<?= _t('ext.auto_label.diagnostics.summary.aggregate_requests') ?>:
+										<?= $escape((string)($diagnostic['aggregate_requests'] ?? 0)) ?>
+									</span>
+									<span class="badge badge--muted">
+										<?= _t('ext.auto_label.diagnostics.summary.aggregate_entry_attempts') ?>:
+										<?= $escape((string)($diagnostic['aggregate_entry_attempts'] ?? 0)) ?>
+									</span>
+									<span class="badge badge--muted">
 										<?= _t('ext.auto_label.diagnostics.summary.concurrent_entries') ?>:
 										<?= $escape((string)($diagnostic['concurrent_entries'] ?? 0)) ?>
 									</span>
@@ -589,6 +607,18 @@ $projectGithubUrl = 'https://github.com/Pls-1q43/freshrss-autolabel';
 							<?php elseif ((string)($diagnostic['type'] ?? '') === 'backfill'): ?>
 								<?php $backfillStats = is_array($diagnostic['stats'] ?? null) ? $diagnostic['stats'] : []; ?>
 								<div class="autolabel-diagnostic-summary">
+									<span class="badge badge--muted">
+										<?= _t('ext.auto_label.diagnostics.summary.aggregate_entries') ?>:
+										<?= $escape((string)($backfillStats['aggregate_entries'] ?? 0)) ?>
+									</span>
+									<span class="badge badge--muted">
+										<?= _t('ext.auto_label.diagnostics.summary.aggregate_requests') ?>:
+										<?= $escape((string)($backfillStats['aggregate_requests'] ?? 0)) ?>
+									</span>
+									<span class="badge badge--muted">
+										<?= _t('ext.auto_label.diagnostics.summary.aggregate_entry_attempts') ?>:
+										<?= $escape((string)($backfillStats['aggregate_entry_attempts'] ?? 0)) ?>
+									</span>
 									<span class="badge badge--muted">
 										<?= _t('ext.auto_label.diagnostics.summary.concurrent_entries') ?>:
 										<?= $escape((string)($backfillStats['concurrent_entries'] ?? 0)) ?>

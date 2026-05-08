@@ -18,9 +18,17 @@ final class AutoLabelExtension extends Minz_Extension {
 		$this->registerController('autolabel');
 		$this->registerViews();
 		$this->registerTranslates();
+		$this->registerAssets();
 		$this->registerHook($this->hookName('EntryBeforeAdd', 'entry_before_add'), [$this, 'handleEntryBeforeAdd']);
 		$this->registerHook($this->hookName('FreshrssUserMaintenance', 'freshrss_user_maintenance'), [$this, 'runQueueMaintenance']);
 		$this->registerHook($this->hookName('MenuAdminEntry', 'menu_admin_entry'), [$this, 'renderNavigationEntry']);
+	}
+
+	private function registerAssets(): void {
+		if (class_exists('Minz_View')) {
+			Minz_View::appendStyle($this->getFileUrl('style.css'));
+			Minz_View::appendScript($this->getFileUrl('script.js'), false, true, false, 'autolabel-script');
+		}
 	}
 
 	public function profilesConfiguration(): array {

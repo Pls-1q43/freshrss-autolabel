@@ -22,7 +22,8 @@ final class AutoLabelViewState {
 }
 
 final class AutoLabelSystemProfileRepository {
-	public const DEFAULT_TIMEOUT_SECONDS = 15;
+	public const DEFAULT_TIMEOUT_SECONDS = 60;
+	public const MAX_TIMEOUT_SECONDS = 600;
 	public const DEFAULT_CONTENT_MAX_CHARS = 6000;
 	public const DEFAULT_BATCH_SIZE = 25;
 	public const MAX_BATCH_SIZE = 200;
@@ -99,6 +100,8 @@ final class AutoLabelSystemProfileRepository {
 			'timeout_seconds' => self::DEFAULT_TIMEOUT_SECONDS,
 			'content_max_chars' => self::DEFAULT_CONTENT_MAX_CHARS,
 			'batch_size' => self::DEFAULT_BATCH_SIZE,
+			'json_mode' => true,
+			'llm_options_json' => '',
 			'embedding_dimensions' => 0,
 			'embedding_num_ctx' => 0,
 			'default_instruction' => '',
@@ -209,9 +212,11 @@ final class AutoLabelSystemProfileRepository {
 		$profile['enabled'] = (bool)$profile['enabled'];
 		$profile['supports_llm'] = $profile['profile_mode'] === 'llm';
 		$profile['supports_embedding'] = $profile['profile_mode'] === 'embedding';
-		$profile['timeout_seconds'] = max(3, min(120, (int)$profile['timeout_seconds']));
+		$profile['timeout_seconds'] = max(3, min(self::MAX_TIMEOUT_SECONDS, (int)$profile['timeout_seconds']));
 		$profile['content_max_chars'] = max(500, min(20000, (int)$profile['content_max_chars']));
 		$profile['batch_size'] = self::normalizeBatchSize((int)$profile['batch_size']);
+		$profile['json_mode'] = (bool)$profile['json_mode'];
+		$profile['llm_options_json'] = trim(html_entity_decode((string)$profile['llm_options_json'], ENT_QUOTES | ENT_HTML5, 'UTF-8'));
 		$profile['embedding_dimensions'] = max(0, min(self::MAX_EMBEDDING_DIMENSIONS, (int)$profile['embedding_dimensions']));
 		$profile['embedding_num_ctx'] = max(0, min(self::MAX_EMBEDDING_NUM_CTX, (int)$profile['embedding_num_ctx']));
 		$profile['base_url'] = trim((string)$profile['base_url']);
@@ -242,6 +247,12 @@ final class AutoLabelSystemProfileRepository {
 		}
 		if ($profile['provider'] === 'anthropic' && $profile['supports_embedding']) {
 			throw new InvalidArgumentException('Anthropic profiles can only use LLM mode.');
+		}
+		if ($profile['llm_options_json'] !== '') {
+			$options = json_decode($profile['llm_options_json'], true);
+			if (!is_array($options) || array_is_list($options)) {
+				throw new InvalidArgumentException('LLM request options must be a JSON object.');
+			}
 		}
 
 		return $profile;
@@ -940,6 +951,10 @@ final class AutoLabelQueueStore {
 				'processed' => 0,
 				'updated' => 0,
 				'matched_tags' => 0,
+				'aggregate_entries' => 0,
+				'aggregate_entry_keys' => [],
+				'aggregate_entry_attempts' => 0,
+				'aggregate_requests' => 0,
 				'concurrent_entries' => 0,
 				'fallback_entries' => 0,
 			],
@@ -1409,7 +1424,7 @@ interface AutoLabelProviderInterface {
 	 * @param array<string,mixed> $profile
 	 * @return array{id:string,url:string,payload:array<string,mixed>,headers:array<string,string>,timeout_seconds:int}
 	 */
-	public function buildTextRequest(array $profile, string $systemPrompt, string $prompt): array;
+	public function buildTextRequest(array $profile, string $systemPrompt, string $prompt, int $maxOutputTokens = 300): array;
 
 	/**
 	 * @param array{status:int,body:string,json:mixed} $response
@@ -1464,7 +1479,7 @@ abstract class AutoLabelAbstractProvider implements AutoLabelProviderInterface {
 	 * @param array<string,mixed> $profile
 	 */
 	protected function timeout(array $profile): int {
-		return max(3, min(120, (int)($profile['timeout_seconds'] ?? AutoLabelSystemProfileRepository::DEFAULT_TIMEOUT_SECONDS)));
+		return max(3, min(AutoLabelSystemProfileRepository::MAX_TIMEOUT_SECONDS, (int)($profile['timeout_seconds'] ?? AutoLabelSystemProfileRepository::DEFAULT_TIMEOUT_SECONDS)));
 	}
 
 	/**
@@ -1496,12 +1511,63 @@ abstract class AutoLabelAbstractProvider implements AutoLabelProviderInterface {
 		return max(0, (int)($profile['embedding_num_ctx'] ?? 0));
 	}
 
+	/**
+	 * @param array<string,mixed> $profile
+	 */
+	protected function jsonModeEnabled(array $profile): bool {
+		return !array_key_exists('json_mode', $profile) || (bool)$profile['json_mode'];
+	}
+
+	/**
+	 * @param array<string,mixed> $profile
+	 * @return array<string,mixed>
+	 */
+	protected function llmOptions(array $profile): array {
+		$raw = trim((string)($profile['llm_options_json'] ?? ''));
+		if ($raw === '') {
+			return [];
+		}
+
+		$decoded = json_decode($raw, true);
+		return is_array($decoded) && !array_is_list($decoded) ? $decoded : [];
+	}
+
+	/**
+	 * @param array<string,mixed> $payload
+	 * @param array<string,mixed> $profile
+	 * @return array<string,mixed>
+	 */
+	protected function applyLlmOptions(array $payload, array $profile): array {
+		$options = $this->llmOptions($profile);
+		if (count($options) === 0) {
+			return $payload;
+		}
+
+		return array_replace_recursive($payload, $options);
+	}
+
 	protected function appendPath(string $baseUrl, string $path): string {
 		$baseUrl = rtrim($baseUrl, '/');
 		if (substr($baseUrl, -3) === '/v1' && substr($path, 0, 4) === '/v1/') {
 			return $baseUrl . substr($path, 3);
 		}
 		return $baseUrl . $path;
+	}
+
+	/**
+	 * @param array<string,mixed> $profile
+	 * @param list<string> $endpointSuffixes
+	 */
+	protected function endpointUrl(array $profile, string $defaultBase, string $defaultPath, array $endpointSuffixes): string {
+		$url = $this->baseUrl($profile, $defaultBase);
+		$path = rtrim(strtolower((string)(parse_url($url, PHP_URL_PATH) ?: '')), '/');
+		foreach ($endpointSuffixes as $suffix) {
+			if ($path === strtolower(rtrim($suffix, '/')) || str_ends_with($path, '/' . ltrim(strtolower(rtrim($suffix, '/')), '/'))) {
+				return $url;
+			}
+		}
+
+		return $this->appendPath($url, $defaultPath);
 	}
 
 	/**
@@ -1657,29 +1723,64 @@ abstract class AutoLabelAbstractProvider implements AutoLabelProviderInterface {
 }
 
 final class AutoLabelOpenAIProvider extends AutoLabelAbstractProvider {
-	public function buildTextRequest(array $profile, string $systemPrompt, string $prompt): array {
+	public function buildTextRequest(array $profile, string $systemPrompt, string $prompt, int $maxOutputTokens = 300): array {
 		$apiKey = $this->apiKey($profile);
 		if ($apiKey === '') {
 			throw new RuntimeException('OpenAI profile requires an API key.');
 		}
 
 		$systemPrompt = $this->applyThinkingDirectiveToSystemPrompt($profile, $systemPrompt);
+		$url = $this->openAiTextEndpointUrl($profile);
+		if (!$this->isResponsesEndpoint($url)) {
+			$payload = [
+				'model' => (string)$profile['model'],
+				'messages' => [
+					[
+						'role' => 'system',
+						'content' => $systemPrompt,
+					],
+					[
+						'role' => 'user',
+						'content' => $prompt,
+					],
+				],
+				'max_tokens' => max(300, min(12000, $maxOutputTokens)),
+			];
+			if ($this->jsonModeEnabled($profile)) {
+				$payload['response_format'] = ['type' => 'json_object'];
+			}
+
+			return [
+				'id' => '',
+				'url' => $url,
+				'payload' => $this->applyLlmOptions($payload, $profile),
+				'headers' => [
+					'Authorization' => 'Bearer ' . $apiKey,
+				],
+				'timeout_seconds' => $this->timeout($profile),
+			];
+		}
+
+		$payload = [
+			'model' => (string)$profile['model'],
+			'instructions' => $systemPrompt,
+			'input' => [[
+				'role' => 'user',
+				'content' => [[
+					'type' => 'input_text',
+					'text' => $prompt,
+				]],
+			]],
+			'max_output_tokens' => max(300, min(12000, $maxOutputTokens)),
+		];
+		if ($this->jsonModeEnabled($profile)) {
+			$payload['text'] = ['format' => ['type' => 'json_object']];
+		}
 
 		return [
 			'id' => '',
-			'url' => $this->appendPath($this->baseUrl($profile, 'https://api.openai.com'), '/v1/responses'),
-			'payload' => [
-				'model' => (string)$profile['model'],
-				'instructions' => $systemPrompt,
-				'input' => [[
-					'role' => 'user',
-					'content' => [[
-						'type' => 'input_text',
-						'text' => $prompt,
-					]],
-				]],
-				'max_output_tokens' => 300,
-			],
+			'url' => $url,
+			'payload' => $this->applyLlmOptions($payload, $profile),
 			'headers' => [
 				'Authorization' => 'Bearer ' . $apiKey,
 			],
@@ -1689,10 +1790,44 @@ final class AutoLabelOpenAIProvider extends AutoLabelAbstractProvider {
 
 	public function parseTextResponse(array $response): string {
 		$json = is_array($response['json']) ? $response['json'] : [];
+		$choices = is_array($json['choices'] ?? null) ? $json['choices'] : [];
+		$message = is_array($choices[0]['message'] ?? null) ? $choices[0]['message'] : [];
+		if (is_string($message['content'] ?? null)) {
+			return $this->stripThinkingContent($message['content']);
+		}
+		if (is_array($message['content'] ?? null)) {
+			$texts = [];
+			foreach ($message['content'] as $part) {
+				if (is_array($part) && is_string($part['text'] ?? null)) {
+					$texts[] = $part['text'];
+				}
+			}
+			if ($texts !== []) {
+				return $this->stripThinkingContent(trim(implode("\n", $texts)));
+			}
+		}
+
 		$text = is_string($json['output_text'] ?? null)
 			? $json['output_text']
 			: $this->extractOpenAIOutputText(is_array($json['output'] ?? null) ? $json['output'] : []);
 		return $this->stripThinkingContent($text);
+	}
+
+	private function openAiTextEndpointUrl(array $profile): string {
+		$url = $this->baseUrl($profile, 'https://api.openai.com');
+		$path = rtrim(strtolower((string)(parse_url($url, PHP_URL_PATH) ?: '')), '/');
+		if (str_ends_with($path, '/responses') || str_ends_with($path, '/chat/completions')) {
+			return $url;
+		}
+
+		$host = strtolower((string)(parse_url($url, PHP_URL_HOST) ?: ''));
+		$defaultPath = $host === 'api.openai.com' ? '/v1/responses' : '/chat/completions';
+		return $this->appendPath($url, $defaultPath);
+	}
+
+	private function isResponsesEndpoint(string $url): bool {
+		$path = rtrim(strtolower((string)(parse_url($url, PHP_URL_PATH) ?: '')), '/');
+		return str_ends_with($path, '/responses');
 	}
 
 	public function buildSingleEmbeddingRequest(array $profile, string $text, ?string $instruction = null): array {
@@ -1713,7 +1848,7 @@ final class AutoLabelOpenAIProvider extends AutoLabelAbstractProvider {
 
 		return [
 			'id' => '',
-			'url' => $this->appendPath($this->baseUrl($profile, 'https://api.openai.com'), '/v1/embeddings'),
+			'url' => $this->endpointUrl($profile, 'https://api.openai.com', '/v1/embeddings', ['/v1/embeddings', '/embeddings']),
 			'payload' => $payload,
 			'headers' => [
 				'Authorization' => 'Bearer ' . $apiKey,
@@ -1748,7 +1883,7 @@ final class AutoLabelOpenAIProvider extends AutoLabelAbstractProvider {
 			$payload['dimensions'] = $dimensions;
 		}
 		$response = $this->http->postJson(
-			$this->appendPath($this->baseUrl($profile, 'https://api.openai.com'), '/v1/embeddings'),
+			$this->endpointUrl($profile, 'https://api.openai.com', '/v1/embeddings', ['/v1/embeddings', '/embeddings']),
 			$payload,
 			['Authorization' => 'Bearer ' . $apiKey],
 			$this->embeddingTimeout($profile)
@@ -1768,26 +1903,27 @@ final class AutoLabelOpenAIProvider extends AutoLabelAbstractProvider {
 }
 
 final class AutoLabelAnthropicProvider extends AutoLabelAbstractProvider {
-	public function buildTextRequest(array $profile, string $systemPrompt, string $prompt): array {
+	public function buildTextRequest(array $profile, string $systemPrompt, string $prompt, int $maxOutputTokens = 300): array {
 		$apiKey = $this->apiKey($profile);
 		if ($apiKey === '') {
 			throw new RuntimeException('Anthropic profile requires an API key.');
 		}
 
 		$systemPrompt = $this->applyThinkingDirectiveToSystemPrompt($profile, $systemPrompt);
+		$payload = [
+			'model' => (string)$profile['model'],
+			'max_tokens' => max(300, min(12000, $maxOutputTokens)),
+			'system' => $systemPrompt,
+			'messages' => [[
+				'role' => 'user',
+				'content' => $prompt,
+			]],
+		];
 
 		return [
 			'id' => '',
-			'url' => $this->appendPath($this->baseUrl($profile, 'https://api.anthropic.com'), '/v1/messages'),
-			'payload' => [
-				'model' => (string)$profile['model'],
-				'max_tokens' => 300,
-				'system' => $systemPrompt,
-				'messages' => [[
-					'role' => 'user',
-					'content' => $prompt,
-				]],
-			],
+			'url' => $this->endpointUrl($profile, 'https://api.anthropic.com', '/v1/messages', ['/v1/messages', '/messages']),
+			'payload' => $this->applyLlmOptions($payload, $profile),
 			'headers' => [
 				'x-api-key' => $apiKey,
 				'anthropic-version' => '2023-06-01',
@@ -1818,7 +1954,7 @@ final class AutoLabelAnthropicProvider extends AutoLabelAbstractProvider {
 }
 
 final class AutoLabelGeminiProvider extends AutoLabelAbstractProvider {
-	public function buildTextRequest(array $profile, string $systemPrompt, string $prompt): array {
+	public function buildTextRequest(array $profile, string $systemPrompt, string $prompt, int $maxOutputTokens = 300): array {
 		$apiKey = $this->apiKey($profile);
 		if ($apiKey === '') {
 			throw new RuntimeException('Gemini profile requires an API key.');
@@ -1827,25 +1963,30 @@ final class AutoLabelGeminiProvider extends AutoLabelAbstractProvider {
 		$systemPrompt = $this->applyThinkingDirectiveToSystemPrompt($profile, $systemPrompt);
 
 		$model = rawurlencode((string)$profile['model']);
+		$payload = [
+			'systemInstruction' => [
+				'parts' => [[
+					'text' => $systemPrompt,
+				]],
+			],
+			'contents' => [[
+				'role' => 'user',
+				'parts' => [[
+					'text' => $prompt,
+				]],
+			]],
+			'generationConfig' => [
+				'maxOutputTokens' => max(300, min(12000, $maxOutputTokens)),
+			],
+		];
+		if ($this->jsonModeEnabled($profile)) {
+			$payload['generationConfig']['responseMimeType'] = 'application/json';
+		}
+
 		return [
 			'id' => '',
 			'url' => $this->baseUrl($profile, 'https://generativelanguage.googleapis.com') . "/v1beta/models/{$model}:generateContent?key=" . rawurlencode($apiKey),
-			'payload' => [
-				'systemInstruction' => [
-					'parts' => [[
-						'text' => $systemPrompt,
-					]],
-				],
-				'contents' => [[
-					'role' => 'user',
-					'parts' => [[
-						'text' => $prompt,
-					]],
-				]],
-				'generationConfig' => [
-					'responseMimeType' => 'application/json',
-				],
-			],
+			'payload' => $this->applyLlmOptions($payload, $profile),
 			'headers' => [],
 			'timeout_seconds' => $this->timeout($profile),
 		];
@@ -1948,7 +2089,7 @@ final class AutoLabelGeminiProvider extends AutoLabelAbstractProvider {
 }
 
 final class AutoLabelOllamaProvider extends AutoLabelAbstractProvider {
-	public function buildTextRequest(array $profile, string $systemPrompt, string $prompt): array {
+	public function buildTextRequest(array $profile, string $systemPrompt, string $prompt, int $maxOutputTokens = 300): array {
 		$headers = [];
 		if ($this->apiKey($profile) !== '') {
 			$headers['Authorization'] = 'Bearer ' . $this->apiKey($profile);
@@ -1970,10 +2111,13 @@ final class AutoLabelOllamaProvider extends AutoLabelAbstractProvider {
 				],
 			],
 			'stream' => false,
-			'format' => 'json',
+			'options' => [
+				'num_predict' => max(300, min(12000, $maxOutputTokens)),
+			],
 		];
-		// Ollama 0.3.12+ natively understands the "think" flag for reasoning models (qwen3, deepseek-r1, ...).
-		// Older versions safely ignore unknown keys, so sending it is backwards compatible.
+		if ($this->jsonModeEnabled($profile)) {
+			$payload['format'] = 'json';
+		}
 		if ($thinkingMode === 'disabled') {
 			$payload['think'] = false;
 		} elseif ($thinkingMode === 'enabled') {
@@ -1982,8 +2126,8 @@ final class AutoLabelOllamaProvider extends AutoLabelAbstractProvider {
 
 		return [
 			'id' => '',
-			'url' => $this->appendPath($this->baseUrl($profile, 'http://127.0.0.1:11434'), '/api/chat'),
-			'payload' => $payload,
+			'url' => $this->endpointUrl($profile, 'http://127.0.0.1:11434', '/api/chat', ['/api/chat']),
+			'payload' => $this->applyLlmOptions($payload, $profile),
 			'headers' => $headers,
 			'timeout_seconds' => $this->timeout($profile),
 		];
@@ -2017,7 +2161,7 @@ final class AutoLabelOllamaProvider extends AutoLabelAbstractProvider {
 
 		return [
 			'id' => '',
-			'url' => $this->appendPath($this->baseUrl($profile, 'http://127.0.0.1:11434'), '/api/embed'),
+			'url' => $this->endpointUrl($profile, 'http://127.0.0.1:11434', '/api/embed', ['/api/embed']),
 			'payload' => $payload,
 			'headers' => $headers,
 			'timeout_seconds' => $this->embeddingTimeout($profile),
@@ -2165,14 +2309,14 @@ final class AutoLabelEngine {
 	 * @return array<string,array{tags:list<string>,results:list<array<string,mixed>>,context:array<string,string>,failed_rule_ids:list<string>,transport:string}>
 	 */
 	public function runProfileBatch(array $profile, array $tasks): array {
-		if (!$this->supportsConcurrentWindow()) {
-			throw new RuntimeException('Concurrent batch execution requires the PHP curl extension.');
-		}
 		if (count($tasks) === 0) {
 			return [];
 		}
 
 		$effectiveProfile = $this->effectiveProfile($profile);
+		if (($effectiveProfile['profile_mode'] ?? 'llm') === 'embedding' && !$this->supportsConcurrentWindow()) {
+			throw new RuntimeException('Embedding batch execution requires the PHP curl extension with curl_multi support.');
+		}
 		$contextsByTask = [];
 		foreach ($tasks as $task) {
 			$maxChars = (int)($effectiveProfile['content_max_chars'] ?? AutoLabelSystemProfileRepository::DEFAULT_CONTENT_MAX_CHARS);
@@ -2192,73 +2336,73 @@ final class AutoLabelEngine {
 	 */
 	private function runLlmProfileBatch(array $profile, array $tasks, array $contextsByTask): array {
 		$provider = $this->providers->create((string)$profile['provider']);
-		$requests = [];
-		foreach ($tasks as $task) {
-			$taskId = (string)$task['task_id'];
-			$request = $provider->buildTextRequest(
-				$profile,
-				'You are a strict multi-rule classifier. Return JSON only in the form {"results":[{"rule_id":"...","match":true|false,"confidence":0..1,"reason":"short explanation"}]}. Include every rule exactly once.',
-				$this->buildCombinedLlmPrompt($task['rules'], $contextsByTask[$taskId])
-			);
-			$request['id'] = $taskId;
-			$requests[] = $request;
-		}
-
-		$responses = $this->http->postJsonConcurrent($requests);
 		$resultsByTask = [];
 		foreach ($tasks as $task) {
 			$taskId = (string)$task['task_id'];
-			$context = $this->diagnosticContext($contextsByTask[$taskId]);
-			$aggregate = [
+			$resultsByTask[$taskId] = [
 				'tags' => [],
 				'results' => [],
-				'context' => $context,
+				'context' => $this->diagnosticContext($contextsByTask[$taskId]),
 				'failed_rule_ids' => [],
-				'transport' => 'concurrent',
+				'transport' => 'aggregate',
 			];
-			$responseInfo = $responses[$taskId] ?? ['ok' => false, 'error' => 'No response was returned for this task.'];
-			$aggregate['transport'] = (string)($responseInfo['transport'] ?? 'concurrent');
-			if (!($responseInfo['ok'] ?? false)) {
+		}
+
+		try {
+			$request = $provider->buildTextRequest(
+				$profile,
+				'You are a strict article-rule matrix classifier. Return JSON only in the form {"results":[{"task_id":"...","rule_id":"...","match":true|false,"confidence":0..1,"reason":"short explanation"}]}. Include every requested task_id and rule_id pair exactly once.',
+				$this->buildLlmMatrixPrompt($tasks, $contextsByTask),
+				$this->llmMatrixMaxOutputTokens($tasks)
+			);
+			$response = $this->http->postJson(
+				(string)$request['url'],
+				$request['payload'],
+				$request['headers'],
+				(int)$request['timeout_seconds']
+			);
+			$decisionMap = $this->parseLlmMatrixDecisions($provider->parseTextResponse($response), count($tasks) === 1 ? (string)$tasks[0]['task_id'] : null);
+		} catch (Throwable $throwable) {
+			foreach ($tasks as $task) {
+				$taskId = (string)$task['task_id'];
 				foreach ($task['rules'] as $rule) {
-					$aggregate['results'][] = [
+					$resultsByTask[$taskId]['results'][] = [
 						'rule_id' => $rule['id'],
 						'rule_name' => $rule['name'],
 						'target_tags' => $rule['target_tags'],
 						'mode' => 'llm',
 						'matched' => false,
 						'status' => 'error',
-						'reason' => (string)($responseInfo['error'] ?? 'Request failed.'),
+						'reason' => $throwable->getMessage(),
 					];
-					$aggregate['failed_rule_ids'][] = (string)$rule['id'];
+					$resultsByTask[$taskId]['failed_rule_ids'][] = (string)$rule['id'];
 				}
-				$resultsByTask[$taskId] = $aggregate;
-				continue;
+				$resultsByTask[$taskId]['failed_rule_ids'] = array_values(array_unique($resultsByTask[$taskId]['failed_rule_ids']));
 			}
+			return $resultsByTask;
+		}
 
-			$decisionMap = $this->parseCombinedLlmDecisions($provider->parseTextResponse([
-				'status' => (int)($responseInfo['status'] ?? 200),
-				'body' => (string)($responseInfo['body'] ?? ''),
-				'json' => $responseInfo['json'] ?? null,
-			]));
+		foreach ($tasks as $task) {
+			$taskId = (string)$task['task_id'];
 			foreach ($task['rules'] as $rule) {
 				$ruleId = (string)$rule['id'];
-				$decision = $decisionMap[$ruleId] ?? null;
+				$decision = $decisionMap[$taskId][$ruleId] ?? null;
 				if (!is_array($decision)) {
-					$aggregate['results'][] = [
+					$resultsByTask[$taskId]['results'][] = [
 						'rule_id' => $ruleId,
 						'rule_name' => $rule['name'],
 						'target_tags' => $rule['target_tags'],
 						'mode' => 'llm',
 						'matched' => false,
 						'status' => 'error',
-						'reason' => 'The model did not return a decision for this rule.',
+						'reason' => 'The model did not return a decision for this article and rule.',
 					];
-					$aggregate['failed_rule_ids'][] = $ruleId;
+					$resultsByTask[$taskId]['failed_rule_ids'][] = $ruleId;
 					continue;
 				}
 
 				$matched = !empty($decision['match']);
-				$aggregate['results'][] = [
+				$resultsByTask[$taskId]['results'][] = [
 					'rule_id' => $ruleId,
 					'rule_name' => $rule['name'],
 					'target_tags' => $rule['target_tags'],
@@ -2272,14 +2416,13 @@ final class AutoLabelEngine {
 				];
 				if ($matched) {
 					foreach ($rule['target_tags'] as $targetTag) {
-						$aggregate['tags'][] = (string)$targetTag;
+						$resultsByTask[$taskId]['tags'][] = (string)$targetTag;
 					}
 				}
 			}
 
-			$aggregate['tags'] = array_values(array_unique($aggregate['tags']));
-			$aggregate['failed_rule_ids'] = array_values(array_unique($aggregate['failed_rule_ids']));
-			$resultsByTask[$taskId] = $aggregate;
+			$resultsByTask[$taskId]['tags'] = array_values(array_unique($resultsByTask[$taskId]['tags']));
+			$resultsByTask[$taskId]['failed_rule_ids'] = array_values(array_unique($resultsByTask[$taskId]['failed_rule_ids']));
 		}
 
 		return $resultsByTask;
@@ -2462,6 +2605,7 @@ final class AutoLabelEngine {
 		}
 
 		$contextsByMaxChars = [];
+		$llmRulesByProfile = [];
 		foreach ($rules as $rule) {
 			if (!($rule['enabled'] ?? false)) {
 				continue;
@@ -2488,10 +2632,13 @@ final class AutoLabelEngine {
 			$context = $contextsByMaxChars[$maxChars];
 			$effectiveProfile = $this->effectiveProfile($profile);
 
+			if ($rule['mode'] === 'llm') {
+				$llmRulesByProfile[(string)$profile['id']][] = $rule;
+				continue;
+			}
+
 			try {
-				$result = $rule['mode'] === 'embedding'
-					? $this->runEmbeddingRule($effectiveProfile, $rule, $context)
-					: $this->runLlmRule($effectiveProfile, $rule, $context);
+				$result = $this->runEmbeddingRule($effectiveProfile, $rule, $context);
 			} catch (Throwable $throwable) {
 				$result = [
 					'rule_id' => $rule['id'],
@@ -2510,6 +2657,22 @@ final class AutoLabelEngine {
 				}
 			}
 			$results[] = $result;
+		}
+
+		foreach ($llmRulesByProfile as $profileId => $profileRules) {
+			$profile = $profilesById[$profileId] ?? null;
+			if (!is_array($profile)) {
+				continue;
+			}
+
+			$batchResults = $this->runProfileBatch($profile, [[
+				'task_id' => '0',
+				'entry' => $entry,
+				'rules' => $profileRules,
+			]]);
+			$entryResult = $batchResults['0'] ?? ['tags' => [], 'results' => []];
+			$tags = array_merge($tags, is_array($entryResult['tags'] ?? null) ? $entryResult['tags'] : []);
+			$results = array_merge($results, is_array($entryResult['results'] ?? null) ? $entryResult['results'] : []);
 		}
 
 		$tags = array_values(array_unique(array_filter(array_map(
@@ -2544,6 +2707,9 @@ final class AutoLabelEngine {
 		if ($this->timeoutCapSeconds === null) {
 			return $profile;
 		}
+		if (($profile['profile_mode'] ?? 'llm') === 'llm') {
+			return $profile;
+		}
 
 		$currentTimeout = max(1, (int)($profile['timeout_seconds'] ?? AutoLabelSystemProfileRepository::DEFAULT_TIMEOUT_SECONDS));
 		$profile['timeout_seconds'] = min($currentTimeout, $this->timeoutCapSeconds);
@@ -2575,25 +2741,44 @@ final class AutoLabelEngine {
 	}
 
 	/**
-	 * @param list<array<string,mixed>> $rules
-	 * @param array<string,string> $context
+	 * @param list<array{task_id:string,entry:FreshRSS_Entry,rules:list<array<string,mixed>>}> $tasks
+	 * @param array<string,array<string,string>> $contextsByTask
 	 */
-	private function buildCombinedLlmPrompt(array $rules, array $context): string {
-		$parts = [];
-		foreach ($rules as $rule) {
-			$parts[] = "Rule ID: {$rule['id']}\nRule name: {$rule['name']}\nTarget tags: " . implode(', ', $rule['target_tags']) . "\nPrompt:\n" . $this->buildLlmPrompt($rule, $context);
+	private function buildLlmMatrixPrompt(array $tasks, array $contextsByTask): string {
+		$items = [];
+		foreach ($tasks as $task) {
+			$taskId = (string)$task['task_id'];
+			$context = $contextsByTask[$taskId] ?? [];
+			foreach ($task['rules'] as $rule) {
+				$items[] = "Task ID: {$taskId}\n"
+					. "Rule ID: {$rule['id']}\n"
+					. "Rule name: {$rule['name']}\n"
+					. "Target tags: " . implode(', ', $rule['target_tags']) . "\n"
+					. "Prompt:\n" . $this->buildLlmPrompt($rule, $context);
+			}
 		}
 
-		return "Evaluate each rule independently for the same article. Return JSON only in this exact format:\n"
-			. "{\"results\":[{\"rule_id\":\"rule-id\",\"match\":true,\"confidence\":0.0,\"reason\":\"short explanation\"}]}\n"
-			. "Include every rule exactly once.\n\n"
-			. implode("\n\n---\n\n", $parts);
+		return "Evaluate each task/rule item independently. Return JSON only in this exact format:\n"
+			. "{\"results\":[{\"task_id\":\"task-id\",\"rule_id\":\"rule-id\",\"match\":true,\"confidence\":0.0,\"reason\":\"short explanation\"}]}\n"
+			. "Include every requested task_id and rule_id pair exactly once. Do not add labels directly; only decide match values.\n\n"
+			. implode("\n\n---\n\n", $items);
 	}
 
 	/**
-	 * @return array<string,array{match:bool,confidence:float|null,reason:string}>
+	 * @param list<array{task_id:string,entry:FreshRSS_Entry,rules:list<array<string,mixed>>}> $tasks
 	 */
-	private function parseCombinedLlmDecisions(string $text): array {
+	private function llmMatrixMaxOutputTokens(array $tasks): int {
+		$decisionCount = 0;
+		foreach ($tasks as $task) {
+			$decisionCount += count($task['rules']);
+		}
+		return max(300, min(12000, 240 + ($decisionCount * 180)));
+	}
+
+	/**
+	 * @return array<string,array<string,array{match:bool,confidence:float|null,reason:string}>>
+	 */
+	private function parseLlmMatrixDecisions(string $text, ?string $singleTaskId = null): array {
 		$raw = trim($text);
 		$decoded = json_decode($raw, true);
 		if (!is_array($decoded) && preg_match('/\{.*\}/s', $raw, $matches) === 1) {
@@ -2609,15 +2794,22 @@ final class AutoLabelEngine {
 			if (!is_array($item)) {
 				continue;
 			}
+			$taskId = trim((string)($item['task_id'] ?? ''));
+			if ($taskId === '' && $singleTaskId !== null) {
+				$taskId = $singleTaskId;
+			}
 			$ruleId = trim((string)($item['rule_id'] ?? ''));
-			if ($ruleId === '') {
+			if ($taskId === '' || $ruleId === '') {
 				continue;
 			}
 			$confidence = null;
 			if (isset($item['confidence']) && is_numeric($item['confidence'])) {
 				$confidence = max(0.0, min(1.0, (float)$item['confidence']));
 			}
-			$decisions[$ruleId] = [
+			if (!isset($decisions[$taskId])) {
+				$decisions[$taskId] = [];
+			}
+			$decisions[$taskId][$ruleId] = [
 				'match' => (bool)($item['match'] ?? false),
 				'confidence' => $confidence,
 				'reason' => trim((string)($item['reason'] ?? '')),
@@ -3009,16 +3201,21 @@ final class AutoLabelBackfillService {
 			'processed' => 0,
 			'updated' => 0,
 			'matched_tags' => 0,
+			'aggregate_entries' => 0,
+			'aggregate_entry_keys' => [],
+			'aggregate_entry_attempts' => 0,
+			'aggregate_requests' => 0,
 			'concurrent_entries' => 0,
 			'fallback_entries' => 0,
 		];
-		$summary = ['processed' => 0, 'updated' => 0, 'matched_tags' => 0, 'concurrent_entries' => 0, 'fallback_entries' => 0];
+		$summary = ['processed' => 0, 'updated' => 0, 'matched_tags' => 0, 'aggregate_entries' => 0, 'concurrent_entries' => 0, 'fallback_entries' => 0];
 		do {
 			$result = $this->processJobSlice($rules, $state);
 			$state = $result['state'];
 			$summary['processed'] = (int)$state['processed'];
 			$summary['updated'] = (int)$state['updated'];
 			$summary['matched_tags'] = (int)$state['matched_tags'];
+			$summary['aggregate_entries'] = (int)($state['aggregate_entries'] ?? 0);
 			$summary['concurrent_entries'] = (int)($state['concurrent_entries'] ?? 0);
 			$summary['fallback_entries'] = (int)($state['fallback_entries'] ?? 0);
 			if (!empty($result['deferred'])) {
@@ -3046,10 +3243,21 @@ final class AutoLabelBackfillService {
 		$processed = max(0, (int)($state['processed'] ?? 0));
 		$updated = max(0, (int)($state['updated'] ?? 0));
 		$matchedTags = max(0, (int)($state['matched_tags'] ?? 0));
+		$totalAggregateEntries = max(0, (int)($state['aggregate_entries'] ?? 0));
+		$aggregateEntryKeys = array_values(array_filter(is_array($state['aggregate_entry_keys'] ?? null) ? $state['aggregate_entry_keys'] : [], 'is_string'));
+		$aggregateEntryKeyMap = array_fill_keys($aggregateEntryKeys, true);
+		if (count($aggregateEntryKeyMap) > 0) {
+			$totalAggregateEntries = count($aggregateEntryKeyMap);
+		}
+		$totalAggregateEntryAttempts = max(0, (int)($state['aggregate_entry_attempts'] ?? 0));
+		$totalAggregateRequests = max(0, (int)($state['aggregate_requests'] ?? 0));
 		$totalConcurrentEntries = max(0, (int)($state['concurrent_entries'] ?? 0));
 		$totalFallbackEntries = max(0, (int)($state['fallback_entries'] ?? 0));
 		$offset = max(0, (int)($state['offset'] ?? 0));
 		$pendingQueue = array_values(array_filter(is_array($state['pending_queue'] ?? null) ? $state['pending_queue'] : [], 'is_array'));
+		$finishReason = trim((string)($state['finish_reason'] ?? ''));
+		$latestCandidateDate = trim((string)($state['latest_candidate_date'] ?? ''));
+		$latestCandidateTitle = trim((string)($state['latest_candidate_title'] ?? ''));
 		$fetchBatchSize = $this->resolveFetchBatchSize($rules);
 		$profiles = $this->profilesForRules($rules);
 		if (count($profiles) === 0) {
@@ -3061,8 +3269,13 @@ final class AutoLabelBackfillService {
 					'processed' => $processed,
 					'updated' => $updated,
 					'matched_tags' => $matchedTags,
+					'aggregate_entries' => $totalAggregateEntries,
+					'aggregate_entry_keys' => array_keys($aggregateEntryKeyMap),
+					'aggregate_entry_attempts' => $totalAggregateEntryAttempts,
+					'aggregate_requests' => $totalAggregateRequests,
 					'concurrent_entries' => $totalConcurrentEntries,
 					'fallback_entries' => $totalFallbackEntries,
+					'finish_reason' => 'no_enabled_profiles',
 					'pending_queue' => [],
 				],
 				'finished' => true,
@@ -3080,8 +3293,15 @@ final class AutoLabelBackfillService {
 					'processed' => $processed,
 					'updated' => $updated,
 					'matched_tags' => $matchedTags,
+					'aggregate_entries' => $totalAggregateEntries,
+					'aggregate_entry_keys' => array_keys($aggregateEntryKeyMap),
+					'aggregate_entry_attempts' => $totalAggregateEntryAttempts,
+					'aggregate_requests' => $totalAggregateRequests,
 					'concurrent_entries' => $totalConcurrentEntries,
 					'fallback_entries' => $totalFallbackEntries,
+					'finish_reason' => 'limit_reached',
+					'latest_candidate_date' => $latestCandidateDate,
+					'latest_candidate_title' => $latestCandidateTitle,
 					'pending_queue' => $pendingQueue,
 				],
 				'finished' => true,
@@ -3135,10 +3355,14 @@ final class AutoLabelBackfillService {
 				}
 				if (!$entry instanceof FreshRSS_Entry) {
 					$exhausted = true;
+					$finishReason = 'no_more_entries';
 					break;
 				}
 				if ((int)$entry->date(true) < $cutoff) {
 					$exhausted = true;
+					$finishReason = 'latest_entry_older_than_lookback';
+					$latestCandidateDate = date(DATE_ATOM, (int)$entry->date(true));
+					$latestCandidateTitle = trim((string)$entry->title());
 					break;
 				}
 
@@ -3153,9 +3377,21 @@ final class AutoLabelBackfillService {
 
 			$rulesByProfile = $this->groupRulesByProfile($candidateRules);
 			if (count($rulesByProfile) === 0) {
-				++$processed;
+				if (!$this->engine->supportsConcurrentWindow() && $this->hasEmbeddingRule($candidateRules)) {
+					$deferredQueue[] = [
+						'entry' => $entryDescriptor,
+						'rule_ids' => array_values(array_map(static fn (array $rule): string => (string)$rule['id'], $candidateRules)),
+						'attempts' => $attempts,
+					];
+					if ($queuedCandidate === null) {
+						break;
+					}
+				} else {
+					++$processed;
+				}
 				continue;
 			}
+			$deferredRuleIds = $this->ruleIdsNotInGroups($candidateRules, $rulesByProfile);
 
 			$fitsWindow = true;
 			foreach ($rulesByProfile as $profileId => $profileRules) {
@@ -3191,6 +3427,7 @@ final class AutoLabelBackfillService {
 				'entry_descriptor' => $entryDescriptor,
 				'rules' => $candidateRules,
 				'rules_by_profile' => $rulesByProfile,
+				'deferred_rule_ids' => $deferredRuleIds,
 				'attempts' => $attempts,
 			];
 		}
@@ -3204,8 +3441,15 @@ final class AutoLabelBackfillService {
 					'processed' => $processed,
 					'updated' => $updated,
 					'matched_tags' => $matchedTags,
+					'aggregate_entries' => $totalAggregateEntries,
+					'aggregate_entry_keys' => array_keys($aggregateEntryKeyMap),
+					'aggregate_entry_attempts' => $totalAggregateEntryAttempts,
+					'aggregate_requests' => $totalAggregateRequests,
 					'concurrent_entries' => $totalConcurrentEntries,
 					'fallback_entries' => $totalFallbackEntries,
+					'finish_reason' => $finishReason,
+					'latest_candidate_date' => $latestCandidateDate,
+					'latest_candidate_title' => $latestCandidateTitle,
 					'pending_queue' => array_values(array_merge($deferredQueue, $pendingQueue)),
 				],
 				'finished' => $exhausted && count($deferredQueue) === 0 && count($pendingQueue) === 0,
@@ -3247,6 +3491,7 @@ final class AutoLabelBackfillService {
 			$batchResults = $this->engine->runProfileBatch($profile, $tasks);
 			++$batchSequence;
 			$failedEntries = 0;
+			$aggregateEntries = 0;
 			$concurrentEntries = 0;
 			$fallbackEntries = 0;
 			foreach ($tasks as $task) {
@@ -3261,7 +3506,14 @@ final class AutoLabelBackfillService {
 				$resultsByEntry[(int)$taskId]['results'] = array_merge($resultsByEntry[(int)$taskId]['results'], $result['results'] ?? []);
 				$resultsByEntry[(int)$taskId]['failed_rule_ids'] = array_values(array_unique(array_merge($resultsByEntry[(int)$taskId]['failed_rule_ids'], $result['failed_rule_ids'] ?? [])));
 				$resultsByEntry[(int)$taskId]['transport'] = (string)($result['transport'] ?? 'concurrent');
-				if (($result['transport'] ?? 'concurrent') === 'fallback_retry') {
+				if (($result['transport'] ?? 'concurrent') === 'aggregate') {
+					$aggregateEntries++;
+					$totalAggregateEntryAttempts++;
+					$entryKey = $this->diagnosticEntryKey(is_array($selected[(int)$taskId]['entry_descriptor'] ?? null) ? $selected[(int)$taskId]['entry_descriptor'] : []);
+					if ($entryKey !== '') {
+						$aggregateEntryKeyMap[$entryKey] = true;
+					}
+				} elseif (($result['transport'] ?? 'concurrent') === 'fallback_retry') {
 					$fallbackEntries++;
 				} else {
 					$concurrentEntries++;
@@ -3278,13 +3530,20 @@ final class AutoLabelBackfillService {
 				'batch_index' => $batchSequence,
 				'window_size' => $countForProfile,
 				'processed_entries' => count($tasks),
+				'aggregate_entries' => $aggregateEntries,
+				'aggregate_entry_attempts' => $aggregateEntries,
+				'aggregate_requests' => $aggregateEntries > 0 ? 1 : 0,
 				'concurrent_entries' => $concurrentEntries,
 				'fallback_entries' => $fallbackEntries,
 				'failed_entries' => $failedEntries,
-				'execution_mode' => $fallbackEntries > 0 ? ($concurrentEntries > 0 ? 'mixed' : 'fallback_retry') : 'concurrent',
+				'execution_mode' => $this->diagnosticExecutionMode($aggregateEntries, $concurrentEntries, $fallbackEntries),
 				'remaining_entries' => max(0, $limit - $processed),
 				'duration_ms' => (int)round((microtime(true) - $startedAt) * 1000),
 			]);
+			if ($aggregateEntries > 0) {
+				$totalAggregateRequests++;
+				$totalAggregateEntries = count($aggregateEntryKeyMap);
+			}
 			$totalConcurrentEntries += $concurrentEntries;
 			$totalFallbackEntries += $fallbackEntries;
 		}
@@ -3314,12 +3573,17 @@ final class AutoLabelBackfillService {
 				'failed_tags' => is_array($persist['failed_tags'] ?? null) ? $persist['failed_tags'] : [],
 			]);
 
-			if (count($entryResult['failed_rule_ids']) > 0) {
-				$attempts = (int)$candidate['attempts'] + 1;
-				if ($attempts < 3) {
+			$deferredRuleIds = is_array($candidate['deferred_rule_ids'] ?? null) ? $candidate['deferred_rule_ids'] : [];
+			$retryRuleIds = array_values(array_unique(array_merge($entryResult['failed_rule_ids'], $deferredRuleIds)));
+			if (count($retryRuleIds) > 0) {
+				$attempts = (int)$candidate['attempts'] + (count($entryResult['failed_rule_ids']) > 0 ? 1 : 0);
+				if ($attempts >= 3 && count($deferredRuleIds) > 0) {
+					$retryRuleIds = $deferredRuleIds;
+				}
+				if ($attempts < 3 || count($deferredRuleIds) > 0) {
 					$deferredQueue[] = [
 						'entry' => $candidate['entry_descriptor'],
-						'rule_ids' => $entryResult['failed_rule_ids'],
+						'rule_ids' => $retryRuleIds,
 						'attempts' => $attempts,
 					];
 					continue;
@@ -3337,8 +3601,15 @@ final class AutoLabelBackfillService {
 				'processed' => $processed,
 				'updated' => $updated,
 				'matched_tags' => $matchedTags,
+				'aggregate_entries' => $totalAggregateEntries,
+				'aggregate_entry_keys' => array_keys($aggregateEntryKeyMap),
+				'aggregate_entry_attempts' => $totalAggregateEntryAttempts,
+				'aggregate_requests' => $totalAggregateRequests,
 				'concurrent_entries' => $totalConcurrentEntries,
 				'fallback_entries' => $totalFallbackEntries,
+				'finish_reason' => $processed >= $limit ? 'limit_reached' : ($exhausted ? $finishReason : ''),
+				'latest_candidate_date' => $latestCandidateDate,
+				'latest_candidate_title' => $latestCandidateTitle,
 				'pending_queue' => array_values(array_merge($deferredQueue, $pendingQueue)),
 			],
 			'finished' => $processed >= $limit || ($exhausted && count($deferredQueue) === 0 && count($pendingQueue) === 0),
@@ -3423,12 +3694,64 @@ final class AutoLabelBackfillService {
 			if (!is_array($profile) || empty($profile['enabled'])) {
 				continue;
 			}
-			if (!$this->engine->supportsConcurrentWindow()) {
+			if ((string)($rule['mode'] ?? '') === 'embedding' && !$this->engine->supportsConcurrentWindow()) {
 				continue;
 			}
 			$grouped[$profileId][] = $rule;
 		}
 		return $grouped;
+	}
+
+	/**
+	 * @param list<array<string,mixed>> $rules
+	 */
+	private function hasEmbeddingRule(array $rules): bool {
+		foreach ($rules as $rule) {
+			if ((string)($rule['mode'] ?? '') === 'embedding') {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * @param list<array<string,mixed>> $rules
+	 * @param array<string,list<array<string,mixed>>> $rulesByProfile
+	 * @return list<string>
+	 */
+	private function ruleIdsNotInGroups(array $rules, array $rulesByProfile): array {
+		$runnable = [];
+		foreach ($rulesByProfile as $groupRules) {
+			foreach ($groupRules as $rule) {
+				$runnable[(string)$rule['id']] = true;
+			}
+		}
+
+		$deferred = [];
+		foreach ($rules as $rule) {
+			$ruleId = (string)($rule['id'] ?? '');
+			if ($ruleId !== '' && !isset($runnable[$ruleId])) {
+				$deferred[$ruleId] = $ruleId;
+			}
+		}
+		return array_values($deferred);
+	}
+
+	private function diagnosticExecutionMode(int $aggregateEntries, int $concurrentEntries, int $fallbackEntries): string {
+		$modes = 0;
+		$modes += $aggregateEntries > 0 ? 1 : 0;
+		$modes += $concurrentEntries > 0 ? 1 : 0;
+		$modes += $fallbackEntries > 0 ? 1 : 0;
+		if ($modes > 1) {
+			return 'mixed';
+		}
+		if ($aggregateEntries > 0) {
+			return 'aggregate';
+		}
+		if ($fallbackEntries > 0) {
+			return 'fallback_retry';
+		}
+		return 'concurrent';
 	}
 
 	/**
@@ -3443,6 +3766,35 @@ final class AutoLabelBackfillService {
 			'title' => method_exists($entry, 'title') ? trim((string)$entry->title()) : '',
 			'date' => method_exists($entry, 'date') ? (int)$entry->date(true) : time(),
 		];
+	}
+
+	/**
+	 * @param array<string,mixed> $descriptor
+	 */
+	private function diagnosticEntryKey(array $descriptor): string {
+		$entryId = (int)($descriptor['entry_id'] ?? 0);
+		if ($entryId > 0) {
+			return 'id:' . (string)$entryId;
+		}
+
+		$feedId = (int)($descriptor['feed_id'] ?? 0);
+		$guid = trim((string)($descriptor['guid'] ?? ''));
+		if ($feedId > 0 && $guid !== '') {
+			return 'guid:' . (string)$feedId . ':' . $guid;
+		}
+
+		$link = trim((string)($descriptor['link'] ?? ''));
+		if ($link !== '') {
+			return 'link:' . $link;
+		}
+
+		$title = trim((string)($descriptor['title'] ?? ''));
+		$date = max(0, (int)($descriptor['date'] ?? 0));
+		if ($title !== '' || $date > 0) {
+			return 'title:' . hash('sha256', $title . '|' . (string)$date);
+		}
+
+		return '';
 	}
 
 	private function resolveBackfillDescriptor($entryDao, array $descriptor): ?FreshRSS_Entry {
@@ -3550,48 +3902,47 @@ final class AutoLabelQueueProcessor {
 
 		try {
 			if (!$this->engine->supportsConcurrentWindow()) {
-				$remainingItems = $items;
 				$this->diagnostics->append([
 					'type' => 'queue_concurrency_unavailable',
 					'source' => $source,
-					'message' => 'Concurrent batch execution requires the PHP curl extension.',
+					'message' => 'Embedding batch execution requires the PHP curl extension with curl_multi support. LLM aggregate batches can still run.',
 				]);
-			} else {
-				$remainingItems = $items;
-				do {
-					$madeProgress = false;
-					if ($stats['processed_items'] < $maxProcessedItems && (microtime(true) - $startedAt) < $maxRuntimeSeconds) {
-						$entryPass = $this->processConcurrentEntryPass(
-							$remainingItems,
-							$maxProcessedItems - $stats['processed_items']
-						);
-						$remainingItems = $entryPass['items'];
-						$madeProgress = $madeProgress || $entryPass['made_progress'];
-						$stats['processed_items'] += $entryPass['stats']['processed_items'];
-						$stats['processed_entries'] += $entryPass['stats']['processed_entries'];
-						$stats['updated_entries'] += $entryPass['stats']['updated_entries'];
-						$stats['matched_tags'] += $entryPass['stats']['matched_tags'];
-					}
-
-					if ($stats['processed_items'] < $maxProcessedItems && (microtime(true) - $startedAt) < $maxRuntimeSeconds) {
-						$backfillPass = $this->processConcurrentBackfillPass(
-							$remainingItems,
-							$maxProcessedItems - $stats['processed_items'],
-							$maxBackfillEntries
-						);
-						$remainingItems = $backfillPass['items'];
-						$madeProgress = $madeProgress || $backfillPass['made_progress'];
-						$stats['processed_items'] += $backfillPass['stats']['processed_items'];
-						$stats['processed_entries'] += $backfillPass['stats']['processed_entries'];
-						$stats['updated_entries'] += $backfillPass['stats']['updated_entries'];
-						$stats['matched_tags'] += $backfillPass['stats']['matched_tags'];
-					}
-
-					if (!$madeProgress) {
-						break;
-					}
-				} while ($stats['processed_items'] < $maxProcessedItems && (microtime(true) - $startedAt) < $maxRuntimeSeconds);
 			}
+
+			$remainingItems = $items;
+			do {
+				$madeProgress = false;
+				if ($stats['processed_items'] < $maxProcessedItems && (microtime(true) - $startedAt) < $maxRuntimeSeconds) {
+					$entryPass = $this->processConcurrentEntryPass(
+						$remainingItems,
+						$maxProcessedItems - $stats['processed_items']
+					);
+					$remainingItems = $entryPass['items'];
+					$madeProgress = $madeProgress || $entryPass['made_progress'];
+					$stats['processed_items'] += $entryPass['stats']['processed_items'];
+					$stats['processed_entries'] += $entryPass['stats']['processed_entries'];
+					$stats['updated_entries'] += $entryPass['stats']['updated_entries'];
+					$stats['matched_tags'] += $entryPass['stats']['matched_tags'];
+				}
+
+				if ($stats['processed_items'] < $maxProcessedItems && (microtime(true) - $startedAt) < $maxRuntimeSeconds) {
+					$backfillPass = $this->processConcurrentBackfillPass(
+						$remainingItems,
+						$maxProcessedItems - $stats['processed_items'],
+						$maxBackfillEntries
+					);
+					$remainingItems = $backfillPass['items'];
+					$madeProgress = $madeProgress || $backfillPass['made_progress'];
+					$stats['processed_items'] += $backfillPass['stats']['processed_items'];
+					$stats['processed_entries'] += $backfillPass['stats']['processed_entries'];
+					$stats['updated_entries'] += $backfillPass['stats']['updated_entries'];
+					$stats['matched_tags'] += $backfillPass['stats']['matched_tags'];
+				}
+
+				if (!$madeProgress) {
+					break;
+				}
+			} while ($stats['processed_items'] < $maxProcessedItems && (microtime(true) - $startedAt) < $maxRuntimeSeconds);
 		} finally {
 			$this->engine->setTimeoutCap(null);
 		}
@@ -3683,10 +4034,14 @@ final class AutoLabelQueueProcessor {
 
 			$rulesByProfile = $this->groupRulesByProfile($rules);
 			if (count($rulesByProfile) === 0) {
+				if (!$this->engine->supportsConcurrentWindow() && $this->hasEmbeddingRule($rules)) {
+					continue;
+				}
 				$itemsToRemove[$index] = true;
 				$stats['processed_items']++;
 				continue;
 			}
+			$deferredRuleIds = $this->ruleIdsNotInGroups($rules, $rulesByProfile);
 
 			$fitsWindow = true;
 			foreach ($rulesByProfile as $profileId => $_profileRules) {
@@ -3711,6 +4066,7 @@ final class AutoLabelQueueProcessor {
 				'descriptor' => $entryDescriptor,
 				'rules' => $rules,
 				'rules_by_profile' => $rulesByProfile,
+				'deferred_rule_ids' => $deferredRuleIds,
 				'before_tags' => is_array($entry->tags(false)) ? $entry->tags(false) : [],
 			];
 		}
@@ -3753,6 +4109,7 @@ final class AutoLabelQueueProcessor {
 			$batchResults = $this->engine->runProfileBatch($profile, $tasks);
 			++$batchSequence;
 			$failedEntries = 0;
+			$aggregateEntries = 0;
 			$concurrentEntries = 0;
 			$fallbackEntries = 0;
 			foreach ($tasks as $task) {
@@ -3762,7 +4119,9 @@ final class AutoLabelQueueProcessor {
 				$aggregates[$taskId]['results'] = array_merge($aggregates[$taskId]['results'], $result['results'] ?? []);
 				$aggregates[$taskId]['failed_rule_ids'] = array_values(array_unique(array_merge($aggregates[$taskId]['failed_rule_ids'], $result['failed_rule_ids'] ?? [])));
 				$aggregates[$taskId]['transport'] = (string)($result['transport'] ?? 'concurrent');
-				if (($result['transport'] ?? 'concurrent') === 'fallback_retry') {
+				if (($result['transport'] ?? 'concurrent') === 'aggregate') {
+					$aggregateEntries++;
+				} elseif (($result['transport'] ?? 'concurrent') === 'fallback_retry') {
 					$fallbackEntries++;
 				} else {
 					$concurrentEntries++;
@@ -3779,10 +4138,13 @@ final class AutoLabelQueueProcessor {
 				'batch_index' => $batchSequence,
 				'window_size' => $windowSize,
 				'processed_entries' => count($tasks),
+				'aggregate_entries' => $aggregateEntries,
+				'aggregate_entry_attempts' => $aggregateEntries,
+				'aggregate_requests' => $aggregateEntries > 0 ? 1 : 0,
 				'concurrent_entries' => $concurrentEntries,
 				'fallback_entries' => $fallbackEntries,
 				'failed_entries' => $failedEntries,
-				'execution_mode' => $fallbackEntries > 0 ? ($concurrentEntries > 0 ? 'mixed' : 'fallback_retry') : 'concurrent',
+				'execution_mode' => $this->diagnosticExecutionMode($aggregateEntries, $concurrentEntries, $fallbackEntries),
 				'duration_ms' => (int)round((microtime(true) - $startedAt) * 1000),
 			]);
 		}
@@ -3815,13 +4177,18 @@ final class AutoLabelQueueProcessor {
 			$stats['processed_items']++;
 			$stats['processed_entries']++;
 
-			if (count($aggregate['failed_rule_ids']) > 0) {
+			$deferredRuleIds = is_array($state['deferred_rule_ids'] ?? null) ? $state['deferred_rule_ids'] : [];
+			$retryRuleIds = array_values(array_unique(array_merge($aggregate['failed_rule_ids'], $deferredRuleIds)));
+			if (count($retryRuleIds) > 0) {
 				$attempts = (int)($state['item']['attempts'] ?? 0) + 1;
-				if ($attempts < 3) {
+				if ($attempts >= 3 && count($deferredRuleIds) > 0) {
+					$retryRuleIds = $deferredRuleIds;
+				}
+				if ($attempts < 3 || count($deferredRuleIds) > 0) {
 					$retryItem = $state['item'];
-					$retryItem['attempts'] = $attempts;
+					$retryItem['attempts'] = count($aggregate['failed_rule_ids']) > 0 ? $attempts : (int)($state['item']['attempts'] ?? 0);
 					$retryItem['next_attempt_at'] = $now + self::ENTRY_RETRY_DELAY_SECONDS;
-					$retryItem['rule_ids'] = $aggregate['failed_rule_ids'];
+					$retryItem['rule_ids'] = $retryRuleIds;
 					$retryQueue[] = $retryItem;
 					continue;
 				}
@@ -3891,7 +4258,7 @@ final class AutoLabelQueueProcessor {
 			if (!empty($result['finished'])) {
 				$this->diagnostics->append([
 					'type' => 'backfill',
-					'stats' => $result['state'],
+					'stats' => $this->diagnosticBackfillState($result['state']),
 				]);
 				unset($newItems[$index]);
 			} else {
@@ -4003,7 +4370,7 @@ final class AutoLabelQueueProcessor {
 		if (!empty($result['finished'])) {
 			$this->diagnostics->append([
 				'type' => 'backfill',
-				'stats' => $result['state'],
+				'stats' => $this->diagnosticBackfillState($result['state']),
 			]);
 			return [
 				'keep' => false,
@@ -4022,6 +4389,15 @@ final class AutoLabelQueueProcessor {
 			'updated_entries' => (int)($result['state']['updated'] ?? 0) - (int)($state['updated'] ?? 0),
 			'matched_tags' => (int)($result['state']['matched_tags'] ?? 0) - (int)($state['matched_tags'] ?? 0),
 		];
+	}
+
+	/**
+	 * @param array<string,mixed> $state
+	 * @return array<string,mixed>
+	 */
+	private function diagnosticBackfillState(array $state): array {
+		unset($state['aggregate_entry_keys']);
+		return $state;
 	}
 
 	/**
@@ -4081,10 +4457,48 @@ final class AutoLabelQueueProcessor {
 			if (!is_array($profile) || empty($profile['enabled'])) {
 				continue;
 			}
+			if ((string)($rule['mode'] ?? '') === 'embedding' && !$this->engine->supportsConcurrentWindow()) {
+				continue;
+			}
 			$grouped[$profileId][] = $rule;
 		}
 
 		return $grouped;
+	}
+
+	/**
+	 * @param list<array<string,mixed>> $rules
+	 */
+	private function hasEmbeddingRule(array $rules): bool {
+		foreach ($rules as $rule) {
+			if ((string)($rule['mode'] ?? '') === 'embedding') {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * @param list<array<string,mixed>> $rules
+	 * @param array<string,list<array<string,mixed>>> $rulesByProfile
+	 * @return list<string>
+	 */
+	private function ruleIdsNotInGroups(array $rules, array $rulesByProfile): array {
+		$runnable = [];
+		foreach ($rulesByProfile as $groupRules) {
+			foreach ($groupRules as $rule) {
+				$runnable[(string)$rule['id']] = true;
+			}
+		}
+
+		$deferred = [];
+		foreach ($rules as $rule) {
+			$ruleId = (string)($rule['id'] ?? '');
+			if ($ruleId !== '' && !isset($runnable[$ruleId])) {
+				$deferred[$ruleId] = $ruleId;
+			}
+		}
+		return array_values($deferred);
 	}
 
 	private function profileWindowSize(string $profileId): int {
@@ -4094,6 +4508,23 @@ final class AutoLabelQueueProcessor {
 		}
 
 		return AutoLabelSystemProfileRepository::normalizeBatchSize((int)($profile['batch_size'] ?? AutoLabelSystemProfileRepository::DEFAULT_BATCH_SIZE));
+	}
+
+	private function diagnosticExecutionMode(int $aggregateEntries, int $concurrentEntries, int $fallbackEntries): string {
+		$modes = 0;
+		$modes += $aggregateEntries > 0 ? 1 : 0;
+		$modes += $concurrentEntries > 0 ? 1 : 0;
+		$modes += $fallbackEntries > 0 ? 1 : 0;
+		if ($modes > 1) {
+			return 'mixed';
+		}
+		if ($aggregateEntries > 0) {
+			return 'aggregate';
+		}
+		if ($fallbackEntries > 0) {
+			return 'fallback_retry';
+		}
+		return 'concurrent';
 	}
 
 	/**
